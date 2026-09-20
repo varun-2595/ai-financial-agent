@@ -14,7 +14,8 @@ def configure_logger(log_level: str | None = None) -> None:
     if _configured:
         return
 
-    level = (log_level or os.getenv("LOG_LEVEL", "INFO")).upper()
+    raw_level = log_level or os.getenv("LOG_LEVEL", "INFO")
+    level = raw_level.split("#")[0].strip().upper() or "INFO"
 
     logger.remove()  # remove default handler
 

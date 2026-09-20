@@ -13,3 +13,4 @@ services:
       - ./config:/app/config
     environment:
       - TZ=Asia/Kolkata
+    command: python main.py
