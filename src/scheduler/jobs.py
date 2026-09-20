@@ -24,6 +24,7 @@ from src.signals.generator import SignalGenerator
 from src.trading.paper_engine import PaperTradingEngine
 from src.utils.logger import logger
 from src.utils.market_hours import is_nse_open, is_nyse_open
+from src.utils.state_manager import is_trading_paused
 
 
 def job_screen_universe() -> None:
@@ -64,6 +65,11 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
     closed_reports = engine.evaluate_open_positions(market, snapshots)
     for rep in closed_reports:
         tg.send_message(f"🔔 <b>Trade Exit:</b>\n{rep}")
+
+    # If new trades are paused for this market, stop here (do not scan for new entries)
+    if is_trading_paused(market):
+        logger.info(f"[Job] {market.upper()} new entries PAUSED by user. Evaluated open positions only.")
+        return
 
     # 3. Scan for new trading signals
     portfolio = engine.get_portfolio_summary(market)

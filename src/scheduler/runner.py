@@ -5,6 +5,7 @@ Coordinates the entire dual-market daily schedule across IST and EST/EDT timezon
 from __future__ import annotations
 
 from zoneinfo import ZoneInfo
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from src.scheduler.jobs import (
@@ -20,8 +21,8 @@ IST = ZoneInfo("Asia/Kolkata")
 EST = ZoneInfo("America/New_York")
 
 
-def build_scheduler() -> BlockingScheduler:
-    sched = BlockingScheduler()
+def build_scheduler(background: bool = True) -> BackgroundScheduler | BlockingScheduler:
+    sched = BackgroundScheduler() if background else BlockingScheduler()
 
     # 1. Daily Universe Screening at 05:30 AM IST
     sched.add_job(
@@ -111,8 +112,20 @@ def build_scheduler() -> BlockingScheduler:
     return sched
 
 
+def start_background_scheduler() -> BackgroundScheduler:
+    scheduler = build_scheduler(background=True)
+    logger.info("=" * 60)
+    logger.info("⏱️  AEGIS DUAL-MARKET SCHEDULER STARTED (BACKGROUND)")
+    logger.info("=" * 60)
+    for j in scheduler.get_jobs():
+        logger.info(f"  • Job: {j.id} -> {j.trigger}")
+    logger.info("=" * 60)
+    scheduler.start()
+    return scheduler
+
+
 def run_scheduler() -> None:
-    scheduler = build_scheduler()
+    scheduler = build_scheduler(background=False)
     logger.info("=" * 60)
     logger.info("⏱️  AEGIS DUAL-MARKET SCHEDULER STARTED")
     logger.info("=" * 60)

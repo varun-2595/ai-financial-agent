@@ -195,6 +195,37 @@ class PaperTradingEngine:
 
         return closed_reports
 
+    def close_all_positions(self, market: Literal["india", "us"]) -> list[str]:
+        """Emergency method to close ALL open positions for a market regardless of strategy."""
+        closed_reports = []
+        with _conn() as conn:
+            rows = conn.execute("""
+                SELECT * FROM positions WHERE status = 'OPEN' AND market = ?
+            """, (market,)).fetchall()
+            positions = [dict(r) for r in rows]
+
+        now_str = datetime.now(timezone.utc).isoformat()
+        for pos in positions:
+            pos_id = pos["id"]
+            ticker = pos["ticker"]
+            qty = pos["quantity"]
+            cost = pos["avg_cost"]
+            curr_p = pos["current_price"] or cost
+            realized_pnl = round((curr_p - cost) * qty, 2)
+
+            with _conn() as conn:
+                conn.execute("""
+                    UPDATE positions SET status = 'CLOSED', closed_at = ?, realized_pnl = ? WHERE id = ?
+                """, (now_str, realized_pnl, pos_id))
+                conn.commit()
+
+            self.update_cash(market, curr_p * qty)
+            report = f"[EMERGENCY CLOSE] {ticker} {qty}x closed @ {curr_p} | PnL: {realized_pnl}"
+            logger.warning(f"[Paper Engine] {report}")
+            closed_reports.append(report)
+
+        return closed_reports
+
     def get_portfolio_summary(self, market: Literal["india", "us"]) -> dict:
         cash = self.get_account_balance(market)
         with _conn() as conn:
