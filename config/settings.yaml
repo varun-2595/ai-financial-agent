@@ -1,0 +1,145 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+
+agent:
+  name: "AI Financial Agent"
+  version: "1.0.0"
+  log_level: "INFO"        # overridden by LOG_LEVEL env var
+
+# ── LLM ──────────────────────────────────────────────────────────────────────
+llm:
+  provider: "gemini"
+  model: "gemini-3.8-flash"
+  fallback_model: "gemini-3.6-flash"
+  max_retries: 3
+  retry_delay_seconds: 5
+
+# ── Market Hours (used for scheduling) ───────────────────────────────────────
+market_hours:
+  india_nse:
+    open:  "09:15"    # IST
+    close: "15:30"    # IST
+    square_off_intraday: "15:20"   # IST — all intraday positions closed by here
+    timezone: "Asia/Kolkata"
+
+  us_nyse:
+    open:  "09:30"    # EST
+    close: "16:00"    # EST
+    square_off_intraday: "15:55"   # EST
+    timezone: "America/New_York"
+
+# ── Scheduler — Full Dual-Market Daily Cycle ──────────────────────────────────
+#
+#  IST TIME    EVENT
+#  ─────────────────────────────────────────────────────────────────
+#  05:30 AM    Universe screening — NSE 500 + S&P 500 scored & watchlist updated
+#  09:00 AM    India pre-market scan (gap analysis, intraday setups)
+#  09:15 AM    NSE OPENS  → intraday signals every 15 min, paper trades fire
+#  03:20 PM    India intraday square-off (all intraday positions force-closed)
+#  03:30 PM    NSE CLOSES
+#  03:45 PM    India EOD report → Telegram + Gmail
+#  ─ ─ ─ ─ ─ ─ [evening / US session] ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+#  06:30 PM    US pre-market scan (= 9:00 AM EST / 8:00 AM EST in summer)
+#  07:00 PM    NYSE/NASDAQ OPENS (= 9:30 AM EST) → US intraday signals every 15 min
+#  01:25 AM    US intraday square-off (= 3:55 PM EST)
+#  01:30 AM    NYSE CLOSES (= 4:00 PM EST)
+#  08:00 AM    US overnight report delivered → Telegram + Gmail (morning delivery)
+#  ─────────────────────────────────────────────────────────────────
+#  NOTE: US open time shifts by 30 min during US DST (Mar–Nov vs Nov–Mar).
+#        market_hours.py handles this automatically via pytz/zoneinfo.
+#  ─────────────────────────────────────────────────────────────────
+
+schedule:
+  # ── Universe screening (runs once daily before India open) ────────────────
+  universe_screen_ist: "05:30"          # scores NSE 500 + S&P 500, updates watchlist
+
+  # ── India (NSE) session ───────────────────────────────────────────────────
+  india_premarket_ist:      "09:00"     # pre-market gap + news scan
+  india_intraday_interval_min: 15       # signal check frequency during NSE hours
+  india_square_off_ist:     "15:20"     # force-close all intraday positions
+  india_eod_report_ist:     "15:45"     # EOD report after NSE closes
+
+  # ── US (NYSE/NASDAQ) session ───────────────────────────────────────────────
+  # Times auto-adjusted for DST by scheduler — these are IST equivalents of
+  # the fixed EST times. market_hours.py computes the actual IST equivalent.
+  us_premarket_est:         "09:00"     # = ~6:30–7:00 PM IST (DST-adjusted)
+  us_intraday_interval_min: 15          # signal check frequency during NYSE hours
+  us_square_off_est:        "15:55"     # = ~1:25 AM IST next day
+  us_eod_report_est:        "16:30"     # generated at ~2:00 AM IST
+
+  # US report is DELIVERED next morning (not at 2 AM) to avoid waking you
+  us_overnight_report_delivery_ist: "08:00"   # when you see the US report
+
+  # ── Weekly + Monthly ──────────────────────────────────────────────────────
+  weekly_report_day:        "friday"
+  weekly_report_ist:        "16:00"     # after India close, before US open
+  monthly_picks_day:        1           # 1st of every month
+  monthly_picks_ist:        "09:00"
+  monthly_review_day:       "last_friday"
+  advisory_sell_scan_day:   "friday"
+  advisory_sell_scan_ist:   "10:00"
+
+  # ── Heartbeat (agent health check) ────────────────────────────────────────
+  heartbeat_ist:            "08:00"     # daily "agent is alive" Telegram ping
+
+# ── Paper Trading ─────────────────────────────────────────────────────────────
+paper_trading:
+  enabled: true                   # overridden by PAPER_TRADING_ENABLED env var
+  virtual_capital_inr: 1000000   # ₹10,00,000 virtual capital
+  virtual_capital_usd: 10000     # $10,000 virtual capital
+  risk_per_trade_pct: 0.02       # 2% of capital risked per trade
+  max_position_pct: 0.10         # max 10% in any single position
+  max_sector_pct: 0.30           # max 30% in any single sector
+  max_drawdown_pct: 0.15         # pause all signals if down 15%
+
+# ── Advisory Portfolio ────────────────────────────────────────────────────────
+advisory:
+  enabled: true                   # overridden by ADVISORY_ENABLED env var
+  virtual_capital_inr: 500000    # ₹5,00,000 virtual advisory portfolio
+  virtual_capital_usd: 5000      # $5,000 virtual
+
+  horizon_allocation:
+    short_term_pct: 0.25          # 25% for < 6 month picks
+    long_term_pct: 0.75           # 75% for 1yr+ picks
+
+  diversification:
+    max_single_stock_pct: 0.10
+    max_single_etf_pct: 0.20
+    max_sector_pct: 0.30
+    min_instruments: 6            # always hold ≥ 6 different instruments
+
+  sell_triggers:
+    short_term:
+      target_gain_pct: 20         # +20% → sell alert
+      stop_loss_pct: 8            # -8% → sell alert
+      max_hold_days: 180
+
+    long_term:
+      target_gain_pct: 80         # +80% → partial trim alert
+      stop_loss_pct: 20           # -20% → sell alert
+      max_hold_days: 1825         # 5 years
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+notifications:
+  telegram:
+    enabled: true
+    send_trade_alerts: true
+    send_eod_report: true
+    send_weekly_report: true
+    send_monthly_picks: true
+    send_sell_alerts: true
+    send_heartbeat: true
+    heartbeat_time: "08:00"       # IST daily heartbeat to confirm agent is alive
+
+  email:
+    enabled: true
+    send_weekly_report: true
+    send_monthly_picks: true
+    send_monthly_review: true
+    send_sell_alerts: true
+
+# ── Rate Limiting ─────────────────────────────────────────────────────────────
+rate_limits:
+  yfinance_delay_seconds: 0.5    # delay between yfinance calls
+  gemini_calls_per_minute: 15    # stay under free tier limits

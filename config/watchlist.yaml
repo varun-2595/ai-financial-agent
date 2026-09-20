@@ -1,0 +1,69 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TRADING WATCHLIST
+# Tickers tracked for active trading signals (intraday / swing / positional).
+# Add or remove tickers anytime — no code changes needed.
+# Strategy options: intraday | swing | positional
+# ─────────────────────────────────────────────────────────────────────────────
+
+watchlist:
+  india:
+    - ticker: RELIANCE.NS
+      name: Reliance Industries
+      sector: Energy / Conglomerate
+      strategy: [swing, positional]
+
+    - ticker: INFY.NS
+      name: Infosys Ltd
+      sector: Technology
+      strategy: [swing, positional]
+
+    - ticker: HDFCBANK.NS
+      name: HDFC Bank
+      sector: Banking
+      strategy: [swing, positional]
+
+    - ticker: TATAMOTORS.NS
+      name: Tata Motors
+      sector: Automobile
+      strategy: [intraday, swing]
+
+    - ticker: ICICIBANK.NS
+      name: ICICI Bank
+      sector: Banking
+      strategy: [intraday, swing]
+
+    - ticker: NIFTYBEES.NS
+      name: Nippon Nifty 50 ETF
+      sector: Index ETF
+      strategy: [positional]
+
+    - ticker: BANKBEES.NS
+      name: Nippon Bank ETF
+      sector: Banking ETF
+      strategy: [swing, positional]
+
+  us:
+    - ticker: AAPL
+      name: Apple Inc.
+      sector: Technology
+      strategy: [swing, positional]
+
+    - ticker: NVDA
+      name: NVIDIA Corp.
+      sector: Semiconductors
+      strategy: [swing]
+
+    - ticker: MSFT
+      name: Microsoft Corp.
+      sector: Technology
+      strategy: [swing, positional]
+
+    - ticker: SPY
+      name: SPDR S&P 500 ETF
+      sector: Index ETF
+      strategy: [positional]
+
+    - ticker: QQQ
+      name: Invesco Nasdaq 100 ETF
+      sector: Index ETF
+      strategy: [positional]

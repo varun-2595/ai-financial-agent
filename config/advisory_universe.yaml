@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ADVISORY UNIVERSE
+# Stocks and ETFs eligible for monthly advisory picks.
+# The agent screens these each month and picks the best short/long-term buys.
+# ─────────────────────────────────────────────────────────────────────────────
+
+advisory_universe:
+  india:
+    large_cap:
+      - { ticker: RELIANCE.NS,   name: Reliance Industries,    sector: Energy }
+      - { ticker: TCS.NS,        name: TCS,                    sector: Technology }
+      - { ticker: INFY.NS,       name: Infosys,                sector: Technology }
+      - { ticker: HDFCBANK.NS,   name: HDFC Bank,              sector: Banking }
+      - { ticker: ICICIBANK.NS,  name: ICICI Bank,             sector: Banking }
+      - { ticker: WIPRO.NS,      name: Wipro,                  sector: Technology }
+      - { ticker: BAJFINANCE.NS, name: Bajaj Finance,          sector: NBFC }
+      - { ticker: SUNPHARMA.NS,  name: Sun Pharma,             sector: Pharma }
+      - { ticker: LTIM.NS,       name: LTIMindtree,            sector: Technology }
+      - { ticker: MARUTI.NS,     name: Maruti Suzuki,          sector: Automobile }
+      - { ticker: ASIANPAINT.NS, name: Asian Paints,           sector: Consumer }
+      - { ticker: NESTLEIND.NS,  name: Nestle India,           sector: FMCG }
+
+    mid_cap:
+      - { ticker: TATAMOTORS.NS, name: Tata Motors,            sector: Automobile }
+      - { ticker: PERSISTENT.NS, name: Persistent Systems,     sector: Technology }
+      - { ticker: DIXON.NS,      name: Dixon Technologies,     sector: Electronics }
+      - { ticker: POLYCAB.NS,    name: Polycab India,          sector: Electricals }
+
+    etfs:
+      - { ticker: NIFTYBEES.NS,  name: Nifty 50 ETF,          sector: Index }
+      - { ticker: BANKBEES.NS,   name: Bank Nifty ETF,         sector: Banking }
+      - { ticker: GOLDBEES.NS,   name: Gold ETF,               sector: Commodity }
+      - { ticker: ITBEES.NS,     name: IT ETF,                 sector: Technology }
+
+  us:
+    large_cap:
+      - { ticker: AAPL,   name: Apple,                sector: Technology }
+      - { ticker: MSFT,   name: Microsoft,            sector: Technology }
+      - { ticker: NVDA,   name: NVIDIA,               sector: Semiconductors }
+      - { ticker: GOOGL,  name: Alphabet,             sector: Technology }
+      - { ticker: AMZN,   name: Amazon,               sector: Consumer/Cloud }
+      - { ticker: META,   name: Meta Platforms,       sector: Technology }
+      - { ticker: BRK-B,  name: Berkshire Hathaway,   sector: Financials }
+      - { ticker: JPM,    name: JPMorgan Chase,       sector: Banking }
+      - { ticker: JNJ,    name: Johnson & Johnson,    sector: Healthcare }
+      - { ticker: V,      name: Visa,                 sector: Financials }
+
+    etfs:
+      - { ticker: SPY,  name: S&P 500 ETF,            sector: Index }
+      - { ticker: QQQ,  name: Nasdaq 100 ETF,         sector: Index }
+      - { ticker: VTI,  name: Total Market ETF,       sector: Index }
+      - { ticker: GLD,  name: Gold ETF,               sector: Commodity }
+      - { ticker: XLK,  name: Technology Sector ETF,  sector: Technology }
+      - { ticker: XLF,  name: Financials Sector ETF,  sector: Financials }
+      - { ticker: XLE,  name: Energy Sector ETF,      sector: Energy }
+      - { ticker: XLV,  name: Healthcare Sector ETF,  sector: Healthcare }
