@@ -79,7 +79,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• <code>/status</code> — System health, markets, balances, and trading state\n"
         "• <code>/pause [india|us|all]</code> — Pause new trade entries (stops stay active)\n"
         "• <code>/resume [india|us|all]</code> — Resume autonomous scanning\n"
-        "• <code>/stop [india|us|all]</code> — 🚨 Emergency square-off all positions & pause\n\n"
+        "• <code>/stop [india|us|all]</code> — 🚨 Emergency square-off all positions &amp; pause\n"
+        "• <code>/reset</code> — 🔄 Wipe all open positions &amp; restart with fresh capital\n\n"
         "<b>Portfolio & Watchlist:</b>\n"
         "• <code>/positions [india|us]</code> — View active open positions & P&L\n"
         "• <code>/watchlist [india|us]</code> — List active screened tickers\n"
@@ -99,34 +100,61 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _is_authorized(update):
         return
 
-    # Check market sessions
     nse_status = "🟢 OPEN" if is_nse_open() else "🔴 CLOSED"
     nyse_status = "🟢 OPEN" if is_nyse_open() else "🔴 CLOSED"
-
-    # Check pause state
     pause_india = "⏸️ PAUSED" if is_trading_paused("india") else "▶️ ACTIVE"
     pause_us = "⏸️ PAUSED" if is_trading_paused("us") else "▶️ ACTIVE"
 
-    # Fetch account balances
     engine = PaperTradingEngine()
-    summary_inr = engine.get_portfolio_summary("india")
-    summary_usd = engine.get_portfolio_summary("us")
+    si = engine.get_portfolio_summary("india")
+    su = engine.get_portfolio_summary("us")
+    di = engine.get_daily_stats("india")
+    du = engine.get_daily_stats("us")
+
+    def pnl_line(stats: dict, cur: str) -> str:
+        r = stats["realized_pnl"]
+        u = stats["unrealized_pnl"]
+        t = stats["daily_target"]
+        emoji = "✅" if stats["target_met"] else ("🟡" if r > 0 else "🔴")
+        return (
+            f"   • Realized P&L: <b>{cur}{r:+,.2f}</b> / Target: {cur}{t:,.0f} {emoji}\n"
+            f"   • Unrealized: {cur}{u:+,.2f} | Trades: {stats['total_trades']} "
+            f"(W:{stats['wins']} L:{stats['losses']})"
+        )
 
     text = (
         "📊 <b>AEGIS SYSTEM STATUS</b>\n"
         "──────────────────────────────\n"
         f"🇮🇳 <b>NSE/BSE (India):</b> {nse_status}\n"
-        f"   • Trading State: <b>{pause_india}</b>\n"
-        f"   • Cash: ₹{summary_inr['cash']:,.2f} | Invested: ₹{summary_inr['invested']:,.2f}\n"
-        f"   • Total Value: ₹{summary_inr['total_value']:,.2f}\n"
-        f"   • Open Positions: {summary_inr['open_positions_count']}\n\n"
+        f"   • State: <b>{pause_india}</b> | Cash: ₹{si['cash']:,.2f}\n"
+        f"   • Invested: ₹{si['invested']:,.2f} | Open: {si['open_positions_count']} positions\n"
+        f"{pnl_line(di, '₹')}\n\n"
         f"🇺🇸 <b>NYSE/NASDAQ (US):</b> {nyse_status}\n"
-        f"   • Trading State: <b>{pause_us}</b>\n"
-        f"   • Cash: ${summary_usd['cash']:,.2f} | Invested: ${summary_usd['invested']:,.2f}\n"
-        f"   • Total Value: ${summary_usd['total_value']:,.2f}\n"
-        f"   • Open Positions: {summary_usd['open_positions_count']}\n"
+        f"   • State: <b>{pause_us}</b> | Cash: ${su['cash']:,.2f}\n"
+        f"   • Invested: ${su['invested']:,.2f} | Open: {su['open_positions_count']} positions\n"
+        f"{pnl_line(du, '$')}\n"
         "──────────────────────────────\n"
-        "⚙️ Scheduler: <b>RUNNING (24×7 Daemon)</b>"
+        "⚙️ Scheduler: <b>RUNNING (24×7 Daemon)</b>\n"
+        "<i>Use /reset to wipe all positions &amp; restart fresh.</i>"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+
+    engine = PaperTradingEngine()
+    result = engine.full_reset()
+    n = result["positions_cancelled"]
+    text = (
+        "🔄 <b>PAPER TRADING RESET COMPLETE</b>\n"
+        "──────────────────────────────\n"
+        f"• {n} open position(s) archived as CANCELLED\n"
+        f"• 🇮🇳 India capital reset to: <b>₹{result['new_balance_inr']:,.2f} INR</b>\n"
+        f"• 🇺🇸 US capital reset to: <b>${result['new_balance_usd']:,.2f} USD</b>\n"
+        "──────────────────────────────\n"
+        "<i>Clean slate started. Agent will resume scanning on next schedule cycle.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -208,23 +236,56 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"📭 No open positions{market_label}.", parse_mode="HTML")
         return
 
-    lines = ["📋 <b>ACTIVE OPEN POSITIONS</b>\n──────────────────────────────"]
-    for p in positions:
-        cost = p["avg_cost"]
-        curr = p["current_price"] or cost
-        pnl_pct = ((curr - cost) / cost * 100) if cost else 0.0
-        pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
-        currency = "₹" if p["market"] == "india" else "$"
+    def render_market_block(label: str, flag: str, cur: str, market_positions: list) -> str:
+        if not market_positions:
+            return ""
 
-        lines.append(
-            f"{pnl_emoji} <b>{p['ticker']}</b> ({p['market'].upper()} • {p['strategy']})\n"
-            f"   Qty: {p['quantity']} | Avg: {currency}{cost:,.2f} | Now: {currency}{curr:,.2f}\n"
-            f"   P&L: <b>{pnl_pct:+.2f}%</b>\n"
-            f"   SL: {currency}{p['stop_loss'] or 0:,.2f} | TP: {currency}{p['target_price'] or 0:,.2f}\n"
+        total_invested = 0.0
+        total_pnl_abs = 0.0
+        block_lines = [f"{flag} <b>{label}</b>  ({len(market_positions)} open positions)\n──────────────"]
+
+        for p in market_positions:
+            cost = p["avg_cost"]
+            curr = p["current_price"] or cost
+            qty = p["quantity"]
+            pnl_abs = (curr - cost) * qty
+            pnl_pct = ((curr - cost) / cost * 100) if cost else 0.0
+            total_invested += curr * qty
+            total_pnl_abs += pnl_abs
+            pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
+            strat_tag = p["strategy"].upper()
+
+            block_lines.append(
+                f"{pnl_emoji} <b>{p['ticker']}</b> <i>[{strat_tag}]</i>\n"
+                f"   {qty} × {cur}{cost:,.2f} → {cur}{curr:,.2f}  "
+                f"<b>({pnl_pct:+.2f}%  {cur}{pnl_abs:+,.2f})</b>\n"
+                f"   SL: {cur}{p['stop_loss'] or 0:,.2f}  TP: {cur}{p['target_price'] or 0:,.2f}"
+            )
+
+        total_pnl_emoji = "🟢" if total_pnl_abs >= 0 else "🔴"
+        block_lines.append(
+            f"──────────────\n"
+            f"{total_pnl_emoji} <b>Unrealized P&amp;L: {cur}{total_pnl_abs:+,.2f}</b>  "
+            f"| Invested: {cur}{total_invested:,.2f}"
         )
+        return "\n".join(block_lines)
 
-    lines.append("──────────────────────────────")
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    india_pos = [p for p in positions if p["market"] == "india"]
+    us_pos = [p for p in positions if p["market"] == "us"]
+
+    parts = []
+    if not target or target == "india":
+        block = render_market_block("NSE/BSE  🇮🇳 India", "🇮🇳", "₹", india_pos)
+        if block:
+            parts.append(block)
+    if not target or target == "us":
+        block = render_market_block("NYSE/NASDAQ  🇺🇸 US", "🇺🇸", "$", us_pos)
+        if block:
+            parts.append(block)
+
+    header = "📋 <b>ACTIVE POSITIONS</b>"
+    body = ("\n\n" if len(parts) > 1 else "\n").join(parts)
+    await update.message.reply_text(f"{header}\n{body}", parse_mode="HTML")
 
 
 async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -398,6 +459,7 @@ class AegisTelegramBot:
         self.app.add_handler(CommandHandler("pause", cmd_pause))
         self.app.add_handler(CommandHandler("resume", cmd_resume))
         self.app.add_handler(CommandHandler("stop", cmd_stop))
+        self.app.add_handler(CommandHandler("reset", cmd_reset))
         self.app.add_handler(CommandHandler("positions", cmd_positions))
         self.app.add_handler(CommandHandler("watchlist", cmd_watchlist))
         self.app.add_handler(CommandHandler("include", cmd_include))

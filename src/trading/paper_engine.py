@@ -60,6 +60,29 @@ class PaperTradingEngine:
             conn.commit()
         logger.info(f"[Paper Engine] Reset balances: ₹{self.config.paper_trading.virtual_capital_inr:,.2f} INR | ${self.config.paper_trading.virtual_capital_usd:,.2f} USD")
 
+    def full_reset(self) -> dict:
+        """
+        Nuclear reset: archives open positions as cancelled, resets cash to configured amounts.
+        Call this via /reset command to start a clean new trading session.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with _conn() as conn:
+            # Mark all open positions as CANCELLED
+            conn.execute("""
+                UPDATE positions SET status = 'CANCELLED', closed_at = ?, realized_pnl = 0.0
+                WHERE status = 'OPEN'
+            """, (now,))
+            cancelled = conn.execute("SELECT changes()").fetchone()[0]
+            conn.commit()
+
+        self.reset_account_balances()
+        logger.warning(f"[Paper Engine] 🔄 FULL RESET: {cancelled} positions cancelled. Fresh start at ₹10,000 INR / $1,000 USD.")
+        return {
+            "positions_cancelled": cancelled,
+            "new_balance_inr": self.config.paper_trading.virtual_capital_inr,
+            "new_balance_usd": self.config.paper_trading.virtual_capital_usd,
+        }
+
     def get_account_balance(self, market: Literal["india", "us"]) -> float:
         acc_id = "paper_inr" if market == "india" else "paper_usd"
         with _conn() as conn:
@@ -84,6 +107,51 @@ class PaperTradingEngine:
                 UPDATE accounts SET cash = cash + ?, updated_at = ? WHERE account_id = ?
             """, (delta, datetime.now(timezone.utc).isoformat(), acc_id))
             conn.commit()
+
+    def get_daily_stats(self, market: Literal["india", "us"]) -> dict:
+        """Returns today's trade stats: wins, losses, total P&L, unrealized P&L."""
+        today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        acc_id = "paper_inr" if market == "india" else "paper_usd"
+
+        with _conn() as conn:
+            acc_row = conn.execute(
+                "SELECT cash, initial_cash FROM accounts WHERE account_id = ?", (acc_id,)
+            ).fetchone()
+
+            # Closed trades today
+            closed = conn.execute("""
+                SELECT realized_pnl FROM positions
+                WHERE status = 'CLOSED' AND market = ? AND closed_at LIKE ?
+            """, (market, f"{today_date}%")).fetchall()
+
+            # Open positions
+            open_pos = conn.execute("""
+                SELECT quantity, avg_cost, current_price FROM positions
+                WHERE status = 'OPEN' AND market = ?
+            """, (market,)).fetchall()
+
+        realized_pnl = sum(r["realized_pnl"] for r in closed if r["realized_pnl"])
+        wins = [r for r in closed if (r["realized_pnl"] or 0) > 0]
+        losses = [r for r in closed if (r["realized_pnl"] or 0) < 0]
+        unrealized = sum(
+            ((r["current_price"] or r["avg_cost"]) - r["avg_cost"]) * r["quantity"]
+            for r in open_pos
+        )
+
+        initial = float(acc_row["initial_cash"]) if acc_row else 0.0
+        target = self.config.paper_trading.daily_profit_target_inr if market == "india" \
+            else self.config.paper_trading.daily_profit_target_usd
+
+        return {
+            "total_trades": len(closed),
+            "wins": len(wins),
+            "losses": len(losses),
+            "realized_pnl": round(realized_pnl, 2),
+            "unrealized_pnl": round(unrealized, 2),
+            "daily_target": target,
+            "target_met": realized_pnl >= target,
+            "initial_capital": initial,
+        }
 
     def execute_signal(self, signal: TradeSignal) -> Optional[Order]:
         """
