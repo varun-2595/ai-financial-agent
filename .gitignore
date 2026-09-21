@@ -33,13 +33,13 @@ ENV/
 *.pem
 
 # Local Databases & Persistent State
-data/
+/data/
 *.db
 *.sqlite
 *.sqlite3
 
 # Logs
-logs/
+/logs/
 *.log
 
 # Pytest & IDE

@@ -14,6 +14,7 @@ services:
       - ./src:/app/src
       - ./main.py:/app/main.py
       - ./run_advisory.py:/app/run_advisory.py
+      - ./tests:/app/tests
     environment:
       - TZ=Asia/Kolkata
     command: python main.py
