@@ -129,3 +129,92 @@ watchlist:
       name: Invesco QQQ Trust
       sector: Tech ETF
       strategy: [positional]
+
+    # ── Apple Ecosystem & Supply-Chain ────────────────────────────────────────
+    # High-conviction semiconductor and supply-chain plays tied to Apple product cycles.
+    # Liquid large/mid-caps: intraday + swing | Volatile mid-caps: scalping + intraday
+
+    - ticker: TSM
+      name: Taiwan Semiconductor Manufacturing Co
+      sector: Semiconductors — Chip Fabrication
+      strategy: [intraday, swing]
+
+    - ticker: AVGO
+      name: Broadcom Inc
+      sector: Semiconductors — RF & ASICs
+      strategy: [intraday, swing]
+
+    - ticker: MU
+      name: Micron Technology Inc
+      sector: Memory & Storage
+      strategy: [scalping, intraday, swing]
+
+    - ticker: AMAT
+      name: Applied Materials Inc
+      sector: Semiconductor Equipment
+      strategy: [intraday, swing]
+
+    - ticker: QCOM
+      name: Qualcomm Inc
+      sector: Semiconductors — 5G & Modem
+      strategy: [intraday, swing]
+
+    - ticker: ADI
+      name: Analog Devices Inc
+      sector: Semiconductors — Analog & Power
+      strategy: [intraday, swing]
+
+    - ticker: TXN
+      name: Texas Instruments Inc
+      sector: Semiconductors — Analog
+      strategy: [intraday, swing]
+
+    - ticker: WDC
+      name: Western Digital Corp
+      sector: Storage & NAND Flash
+      strategy: [scalping, intraday]
+
+    - ticker: LITE
+      name: Lumentum Holdings Inc
+      sector: Optics — Face ID & Laser
+      strategy: [scalping, intraday]
+
+    - ticker: COHR
+      name: Coherent Corp
+      sector: Photonics & Laser Components
+      strategy: [scalping, intraday]
+
+    - ticker: SWKS
+      name: Skyworks Solutions Inc
+      sector: RF Front-End Modules
+      strategy: [intraday, swing]
+
+    - ticker: QRVO
+      name: Qorvo Inc
+      sector: RF Amplifiers & Wireless
+      strategy: [intraday, swing]
+
+    - ticker: GLW
+      name: Corning Inc
+      sector: Display Glass — Gorilla Glass
+      strategy: [intraday, swing]
+
+    - ticker: APH
+      name: Amphenol Corp
+      sector: Connectors & Fiber-Optic
+      strategy: [intraday, swing]
+
+    - ticker: JBL
+      name: Jabil Inc
+      sector: Contract Manufacturing
+      strategy: [intraday, swing]
+
+    - ticker: CRUS
+      name: Cirrus Logic Inc
+      sector: Audio ICs & Power Management
+      strategy: [scalping, intraday]
+
+    - ticker: NXPI
+      name: NXP Semiconductors
+      sector: NFC & Secure Element Chips
+      strategy: [intraday, swing]

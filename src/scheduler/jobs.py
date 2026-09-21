@@ -173,16 +173,69 @@ def job_eod_report(market: Literal["india", "us"]) -> None:
 
 
 def job_monthly_advisory() -> None:
-    """1st of every month: Runs full financial advisory screening."""
+    """1st of every month: Runs full financial advisory screening + Apple ecosystem spotlight."""
     logger.info("[Job] Executing monthly advisory run...")
     recommender = AdvisoryRecommender()
     recs = recommender.run_monthly_advisory()
     tg = TelegramNotifier()
+
+    # ── General advisory summary ──────────────────────────────────────────────
     tg.send_message(
         f"🌟 <b>Monthly Advisory Recommendations</b>\n"
-        f"India Long-Term: {len(recs['india_long_term'])}\n"
-        f"India Short-Term: {len(recs['india_short_term'])}\n"
-        f"US Long-Term: {len(recs['us_long_term'])}\n"
-        f"US Short-Term: {len(recs['us_short_term'])}\n"
-        f"Review full portfolio via <code>python run_advisory.py --portfolio</code>"
+        f"🇮🇳 India Long-Term: {len(recs['india_long_term'])} picks\n"
+        f"🇮🇳 India Short-Term: {len(recs['india_short_term'])} picks\n"
+        f"🇺🇸 US Long-Term: {len(recs['us_long_term'])} picks\n"
+        f"🇺🇸 US Short-Term: {len(recs['us_short_term'])} picks\n"
+        f"──────────────────────────────\n"
+        f"<i>Apple ecosystem deep-scan running next…</i>"
     )
+
+    # ── Apple Ecosystem Spotlight ─────────────────────────────────────────────
+    from src.analyst.engine import AnalystEngine
+    from src.screener.universe import get_apple_ecosystem
+
+    eco_tickers = get_apple_ecosystem()
+    analyst = AnalystEngine()
+    buy_picks: list[str] = []
+    watch_picks: list[str] = []
+    avoid_picks: list[str] = []
+
+    logger.info(f"[Job] Apple ecosystem scan: {len(eco_tickers)} tickers")
+    for ticker in eco_tickers:
+        try:
+            snapshot = fetch_us_stock(ticker)
+            if not snapshot:
+                continue
+            analysis = analyst.analyze_stock(snapshot)
+            if "Buy" in analysis.action:
+                buy_picks.append(
+                    f"🟢 <b>{ticker}</b> — {analysis.action} ({analysis.confidence_score*100:.0f}%)\n"
+                    f"   Entry: ${analysis.entry_price_hint or snapshot.current_price:,.2f} | "
+                    f"SL: ${analysis.stop_loss_hint or 0:,.2f} | TP: ${analysis.target_price_hint or 0:,.2f}"
+                )
+            elif "Watch" in analysis.action or "Monitor" in analysis.action:
+                watch_picks.append(f"🟡 <b>{ticker}</b> — {analysis.action}")
+            else:
+                avoid_picks.append(f"🔴 <b>{ticker}</b> — {analysis.action}")
+        except Exception as exc:
+            logger.warning(f"[Job] Apple ecosystem scan failed for {ticker}: {exc}")
+            continue
+
+    eco_lines = [
+        "🍎 <b>Apple Ecosystem Monthly Spotlight</b>",
+        "──────────────────────────────",
+    ]
+    if buy_picks:
+        eco_lines.append(f"<b>🟢 BUY Candidates ({len(buy_picks)}):</b>")
+        eco_lines.extend(buy_picks[:8])  # cap to avoid Telegram message limit
+    if watch_picks:
+        eco_lines.append(f"\n<b>🟡 Watch List ({len(watch_picks)}):</b>")
+        eco_lines.extend(watch_picks[:5])
+    if avoid_picks:
+        eco_lines.append(f"\n<b>🔴 Avoid ({len(avoid_picks)}):</b>")
+        eco_lines.extend(avoid_picks[:5])
+    eco_lines.append("──────────────────────────────")
+    eco_lines.append("<i>These tickers are also in the daily rotation every 3rd day.</i>")
+
+    tg.send_message("\n".join(eco_lines))
+    logger.info("[Job] Monthly advisory + Apple ecosystem spotlight complete.")

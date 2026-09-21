@@ -73,6 +73,41 @@ _US_MID_SMALL_CAPS = [
     "CRWD", "NET", "DDOG", "SNOW", "ZS", "MDB", "CFLT", "IOT", "S", "GTLB",
 ]
 
+# ── Apple Ecosystem / Supply-Chain Plays ─────────────────────────────────────
+# User-curated list of stocks tied to Apple's supply chain:
+# chip fab, RF modules, memory, sensors, contract manufacturing, optics.
+# Sourced from research — suitable for both daily trading and monthly advisory.
+_APPLE_ECOSYSTEM_US = [
+    # Chip Fabrication & Design
+    "TSM",   # TSMC — fabricates A-series/M-series chips
+    "AVGO",  # Broadcom — RF front-end & custom ASICs
+    "QCOM",  # Qualcomm — modem & 5G connectivity (iPhone cellular)
+    "TXN",   # Texas Instruments — analog & power management
+    "ADI",   # Analog Devices — mixed-signal & power chips
+    "NXPI",  # NXP Semiconductors — NFC (Apple Pay) & secure element
+    "ON",    # ON Semiconductor — power ICs & image sensors
+    # RF / Wireless Front-End
+    "QRVO",  # Qorvo — RF amplifiers & wireless front-end
+    "SWKS",  # Skyworks Solutions — RF front-end for cellular
+    # Memory & Storage
+    "MU",    # Micron — DRAM & NAND flash
+    "WDC",   # Western Digital — NAND flash & storage
+    # Optics / Sensing / Laser
+    "LITE",  # Lumentum — VCSEL lasers for Face ID & 3D sensing
+    "COHR",  # Coherent Corp — photonics for Face ID & data links
+    "SONY",  # Sony Group — camera image sensors for iPhone
+    # Display / Glass
+    "GLW",   # Corning — Gorilla Glass / Ceramic Shield
+    "CRUS",  # Cirrus Logic — audio codecs & haptic/battery ICs
+    # Semiconductor Equipment
+    "AMAT",  # Applied Materials — fab equipment used by Apple's chip suppliers
+    # Connectors & PCB
+    "APH",   # Amphenol — electrical, fiber-optic & high-speed connectors
+    "STM",   # STMicroelectronics — gyro/accelerometer sensors & power ICs
+    # Contract Manufacturing
+    "JBL",   # Jabil — enclosures & sub-assemblies (incl. AirPods)
+]
+
 _UNIVERSE_CACHE: dict[str, tuple[list[str], float]] = {}
 _UNIVERSE_TTL = 86400  # 24 hours
 
@@ -142,17 +177,17 @@ def fetch_sp500(use_cache: bool = True) -> list[str]:
             s.strip().replace(".", "-")
             for s in df[symbol_col].dropna().unique()
         ]
-        combined = list(dict.fromkeys(tickers + _US_MID_SMALL_CAPS))
-        logger.success(f"[Universe] US Universe: fetched {len(combined)} tickers (including growth & mid/small caps)")
+        combined = list(dict.fromkeys(tickers + _US_MID_SMALL_CAPS + _APPLE_ECOSYSTEM_US))
+        logger.success(f"[Universe] US Universe: {len(combined)} tickers (SP500 + growth + Apple ecosystem)")
         _UNIVERSE_CACHE["sp500"] = (combined, now)
         return combined
 
     except Exception as exc:
         logger.warning(
             f"[Universe] US fetch failed ({exc}). "
-            f"Using fallback list of {len(_SP500_FALLBACK) + len(_US_MID_SMALL_CAPS)} tickers."
+            f"Using fallback of {len(_SP500_FALLBACK) + len(_US_MID_SMALL_CAPS) + len(_APPLE_ECOSYSTEM_US)} tickers."
         )
-        combined_fallback = list(dict.fromkeys(_SP500_FALLBACK + _US_MID_SMALL_CAPS))
+        combined_fallback = list(dict.fromkeys(_SP500_FALLBACK + _US_MID_SMALL_CAPS + _APPLE_ECOSYSTEM_US))
         _UNIVERSE_CACHE["sp500"] = (combined_fallback, now)
         return combined_fallback
 
@@ -163,10 +198,15 @@ def fetch_full_universe() -> dict[str, list[str]]:
     return {"india": india, "us": us}
 
 
+def get_apple_ecosystem() -> list[str]:
+    """Returns the curated Apple supply-chain ecosystem ticker list for advisory or focused scans."""
+    return list(_APPLE_ECOSYSTEM_US)
+
+
 def get_rotated_universe(market: Literal["india", "us"], max_candidates: int = 40) -> list[str]:
     """
     Returns a dynamically rotated candidate pool based on day-of-year.
-    Ensures that different sectors and market caps are evaluated each day rather than repeating the same 5 stocks.
+    Guarantees Apple-ecosystem stocks appear in the US rotation every few days.
     """
     from datetime import datetime, timezone
     all_tickers = fetch_nse500() if market == "india" else fetch_sp500()
@@ -178,4 +218,12 @@ def get_rotated_universe(market: Literal["india", "us"], max_candidates: int = 4
     # Shift start index daily by prime step 17 to cycle across mid/small caps
     start_idx = (day_offset * 17) % total
     rotated = all_tickers[start_idx:] + all_tickers[:start_idx]
-    return rotated[:max_candidates]
+    base = rotated[:max_candidates]
+
+    # Every 3 days, inject a fresh batch of Apple ecosystem picks into the rotation
+    if market == "us" and (day_offset % 3) == 0:
+        eco_batch = _APPLE_ECOSYSTEM_US[(day_offset // 3) % len(_APPLE_ECOSYSTEM_US):][:6]
+        base = list(dict.fromkeys(eco_batch + base))[:max_candidates]
+
+    return base
+
