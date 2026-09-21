@@ -37,7 +37,7 @@ from src.data.fetcher_india import fetch_india_batch, normalize_india_ticker
 from src.data.fetcher_us import fetch_us_batch
 from src.data.models import StockSnapshot
 from src.screener.filters import DEFAULT_FILTERS, FilterConfig, filter_batch
-from src.screener.universe import fetch_full_universe
+from src.screener.universe import fetch_full_universe, get_rotated_universe
 from src.screener.watchlist_manager import (
     add_ticker,
     get_active_tickers,
@@ -66,8 +66,8 @@ class ScreenerConfig:
     # Score below which an existing auto-added ticker gets removed
     remove_score_threshold: float = 35.0
 
-    # Default strategy to assign to auto-discovered tickers
-    default_strategies: list[str] = field(default_factory=lambda: ["swing", "positional"])
+    # Default strategy to assign to auto-discovered tickers (high-velocity focus)
+    default_strategies: list[str] = field(default_factory=lambda: ["scalping", "intraday", "swing"])
 
     # Delay between yfinance calls during bulk fetch (seconds)
     fetch_delay: float = 0.3
@@ -355,9 +355,8 @@ class MarketScreener:
         universe = fetch_full_universe()
 
         # ── Screen India ───────────────────────────────────────────────────
-        if india and universe.get("india"):
-            # Take a random spread to keep variety (not just same top-50 every time)
-            candidates = universe["india"][:200]  # first 200 for speed
+        if india:
+            candidates = get_rotated_universe("india", max_candidates=100)
             scored_india = self._fetch_and_score(
                 tickers=candidates,
                 market="india",
@@ -374,8 +373,8 @@ class MarketScreener:
             ]
 
         # ── Screen US ──────────────────────────────────────────────────────
-        if us and universe.get("us"):
-            candidates = universe["us"][:200]
+        if us:
+            candidates = get_rotated_universe("us", max_candidates=100)
             scored_us = self._fetch_and_score(
                 tickers=candidates,
                 market="us",

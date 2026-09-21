@@ -44,7 +44,7 @@ ASSET OVERVIEW:
 - Price Change: 1D: {snapshot.price_change_pct_1d or 0:+.2f}%, 1W: {snapshot.price_change_pct_1w or 0:+.2f}%, 1M: {snapshot.price_change_pct_1m or 0:+.2f}%, 3M: {snapshot.price_change_pct_3m or 0:+.2f}%
 
 FUNDAMENTALS:
-- Market Cap: {currency}{(f.market_cap / 1e9):,.2f}B if f.market_cap else 'N/A'
+- Market Cap: {f"{currency}{f.market_cap / 1e9:,.2f}B" if f.market_cap else 'N/A'}
 - P/E Ratio: {f.pe_ratio or 'N/A'} | P/B Ratio: {f.pb_ratio or 'N/A'}
 - EPS: {currency}{f.eps or 'N/A'} | Debt-to-Equity: {f.debt_to_equity or 'N/A'}
 - Return on Equity (ROE): {f'{f.return_on_equity*100:.1f}%' if f.return_on_equity else 'N/A'}

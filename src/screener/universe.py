@@ -36,6 +36,20 @@ _NSE_FALLBACK = [
     "NIFTYBEES.NS", "BANKBEES.NS", "GOLDBEES.NS", "ITBEES.NS", "JUNIORBEES.NS",
 ]
 
+_NSE_MID_SMALL_CAPS = [
+    # High-beta momentum, defence, railway, green energy, electronics
+    "SUZLON.NS", "RVNL.NS", "IREDA.NS", "BSE.NS", "COCHINSHIP.NS", "MAZDOCK.NS",
+    "KALYANKJIL.NS", "POLYCAB.NS", "DIXON.NS", "HUDCO.NS", "NBCC.NS", "RAILTEL.NS",
+    "IRFC.NS", "MOTHERSON.NS", "TITAGARH.NS", "TEJASNET.NS", "HFCL.NS", "RITES.NS",
+    "GPIL.NS", "HEG.NS", "GRAPHITE.NS", "CDSL.NS", "ANGELONE.NS", "MCX.NS",
+    "EXIDEIND.NS", "AMARAJABAT.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS",
+    "IOB.NS", "UCOBANK.NS", "CENTRALBK.NS", "ENGINERSIN.NS", "SJVN.NS", "NHPC.NS",
+    "TATACHEM.NS", "TATAPOWER.NS", "VOLTAS.NS", "DEEPAKNTR.NS", "TATAELXSI.NS",
+    "KPITTECH.NS", "COFORGE.NS", "MPHASIS.NS", "PERSISTENT.NS", "CYIENT.NS",
+    "ZOMATO.NS", "PAYTM.NS", "POLICYBZR.NS", "DELHIVERY.NS", "NYKAA.NS",
+    "TRENT.NS", "ABFRL.NS", "DMART.NS", "DEVYANI.NS", "SAPPHIRE.NS",
+]
+
 _SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 _SP500_FALLBACK = [
@@ -48,6 +62,15 @@ _SP500_FALLBACK = [
     "LRCX", "SNPS", "CDNS", "PANW", "CRWD", "FTNT", "NET", "DDOG", "SNOW",
     # ETFs
     "SPY", "QQQ", "VTI", "GLD", "XLK", "XLF", "XLE", "XLV", "XLP", "XLI",
+]
+
+_US_MID_SMALL_CAPS = [
+    # High-momentum growth, AI, crypto, fintech, quantum, space
+    "PLTR", "SOFI", "MARA", "RIOT", "COIN", "HOOD", "ARM", "SMCI", "AFRM", "CELH",
+    "DKNG", "APP", "RBLX", "IONQ", "RIVN", "LCID", "HIMS", "PATH", "UPST", "DUOL",
+    "MSTR", "CLSK", "SYM", "JOBY", "ACHR", "ASTS", "RGTI", "QUBT", "BBAI", "SOUN",
+    "PLUG", "FCEL", "RUN", "ENPH", "FSLR", "SEDG", "CHPT", "BLNK", "QS",
+    "CRWD", "NET", "DDOG", "SNOW", "ZS", "MDB", "CFLT", "IOT", "S", "GTLB",
 ]
 
 _UNIVERSE_CACHE: dict[str, tuple[list[str], float]] = {}
@@ -81,17 +104,19 @@ def fetch_nse500(use_cache: bool = True) -> list[str]:
             raise ValueError(f"No 'Symbol' column found. Columns: {list(df.columns)}")
 
         tickers = [f"{s.strip()}.NS" for s in df[symbol_col].dropna().unique()]
-        logger.success(f"[Universe] NSE 500: fetched {len(tickers)} tickers")
-        _UNIVERSE_CACHE["nse500"] = (tickers, now)
-        return tickers
+        combined = list(dict.fromkeys(tickers + _NSE_MID_SMALL_CAPS))
+        logger.success(f"[Universe] NSE Universe: fetched {len(combined)} tickers (including mid & small caps)")
+        _UNIVERSE_CACHE["nse500"] = (combined, now)
+        return combined
 
     except Exception as exc:
         logger.warning(
-            f"[Universe] NSE 500 fetch failed ({exc}). "
-            f"Using fallback list of {len(_NSE_FALLBACK)} tickers."
+            f"[Universe] NSE fetch failed ({exc}). "
+            f"Using fallback list of {len(_NSE_FALLBACK) + len(_NSE_MID_SMALL_CAPS)} tickers."
         )
-        _UNIVERSE_CACHE["nse500"] = (_NSE_FALLBACK, now)
-        return _NSE_FALLBACK
+        combined_fallback = list(dict.fromkeys(_NSE_FALLBACK + _NSE_MID_SMALL_CAPS))
+        _UNIVERSE_CACHE["nse500"] = (combined_fallback, now)
+        return combined_fallback
 
 
 def fetch_sp500(use_cache: bool = True) -> list[str]:
@@ -101,7 +126,7 @@ def fetch_sp500(use_cache: bool = True) -> list[str]:
         if now - ts < _UNIVERSE_TTL:
             return tickers
 
-    logger.info("[Universe] Fetching S&P 500 constituent list...")
+    logger.info("[Universe] Fetching US constituent list...")
     try:
         tables = pd.read_html(_SP500_WIKI_URL, attrs={"id": "constituents"})
         df = tables[0]
@@ -117,20 +142,40 @@ def fetch_sp500(use_cache: bool = True) -> list[str]:
             s.strip().replace(".", "-")
             for s in df[symbol_col].dropna().unique()
         ]
-        logger.success(f"[Universe] S&P 500: fetched {len(tickers)} tickers")
-        _UNIVERSE_CACHE["sp500"] = (tickers, now)
-        return tickers
+        combined = list(dict.fromkeys(tickers + _US_MID_SMALL_CAPS))
+        logger.success(f"[Universe] US Universe: fetched {len(combined)} tickers (including growth & mid/small caps)")
+        _UNIVERSE_CACHE["sp500"] = (combined, now)
+        return combined
 
     except Exception as exc:
         logger.warning(
-            f"[Universe] S&P 500 fetch failed ({exc}). "
-            f"Using fallback list of {len(_SP500_FALLBACK)} tickers."
+            f"[Universe] US fetch failed ({exc}). "
+            f"Using fallback list of {len(_SP500_FALLBACK) + len(_US_MID_SMALL_CAPS)} tickers."
         )
-        _UNIVERSE_CACHE["sp500"] = (_SP500_FALLBACK, now)
-        return _SP500_FALLBACK
+        combined_fallback = list(dict.fromkeys(_SP500_FALLBACK + _US_MID_SMALL_CAPS))
+        _UNIVERSE_CACHE["sp500"] = (combined_fallback, now)
+        return combined_fallback
 
 
 def fetch_full_universe() -> dict[str, list[str]]:
     india = fetch_nse500()
     us = fetch_sp500()
     return {"india": india, "us": us}
+
+
+def get_rotated_universe(market: Literal["india", "us"], max_candidates: int = 40) -> list[str]:
+    """
+    Returns a dynamically rotated candidate pool based on day-of-year.
+    Ensures that different sectors and market caps are evaluated each day rather than repeating the same 5 stocks.
+    """
+    from datetime import datetime, timezone
+    all_tickers = fetch_nse500() if market == "india" else fetch_sp500()
+    day_offset = int(datetime.now(timezone.utc).strftime("%j"))  # day of year 1-366
+    total = len(all_tickers)
+    if total <= max_candidates:
+        return all_tickers
+
+    # Shift start index daily by prime step 17 to cycle across mid/small caps
+    start_idx = (day_offset * 17) % total
+    rotated = all_tickers[start_idx:] + all_tickers[:start_idx]
+    return rotated[:max_candidates]

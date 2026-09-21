@@ -71,6 +71,21 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
         logger.info(f"[Job] {market.upper()} new entries PAUSED by user. Evaluated open positions only.")
         return
 
+    # Check daily profit target lock & max daily loss guardrail
+    daily_pnl = engine.get_daily_realized_pnl(market)
+    cfg_paper = engine.config.paper_trading
+    target = cfg_paper.daily_profit_target_inr if market == "india" else cfg_paper.daily_profit_target_usd
+    max_loss = cfg_paper.daily_max_loss_inr if market == "india" else cfg_paper.daily_max_loss_usd
+    currency_sym = "₹" if market == "india" else "$"
+
+    if daily_pnl >= target:
+        logger.success(f"[Job] 🎯 {market.upper()} Daily Profit Target Reached ({currency_sym}{daily_pnl:,.2f} >= {currency_sym}{target:,.2f})! Preserving day's profit.")
+        return
+
+    if daily_pnl <= -max_loss:
+        logger.warning(f"[Job] 🛑 {market.upper()} Daily Max Loss Limit Reached ({currency_sym}{daily_pnl:,.2f} <= -{currency_sym}{max_loss:,.2f})! Halting new entries.")
+        return
+
     # 3. Scan for new trading signals
     portfolio = engine.get_portfolio_summary(market)
     cash = portfolio["cash"]
@@ -99,7 +114,7 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
 
 
 def job_intraday_square_off(market: Literal["india", "us"]) -> None:
-    """3:20 PM IST (India) / 3:55 PM EST (US): Mandatory square-off for intraday trades."""
+    """3:20 PM IST (India) / 3:55 PM EST (US): Mandatory square-off for intraday & scalping trades."""
     logger.info(f"[Job] Executing {market.upper()} intraday square-off...")
     engine = PaperTradingEngine()
     tg = TelegramNotifier()
@@ -113,17 +128,48 @@ def job_intraday_square_off(market: Literal["india", "us"]) -> None:
 
 
 def job_eod_report(market: Literal["india", "us"]) -> None:
-    """Delivers EOD report via Telegram and Gmail."""
-    logger.info(f"[Job] Generating {market.upper()} EOD report...")
+    """Delivers EOD report with learning autopsies via Telegram and Gmail."""
+    logger.info(f"[Job] Generating {market.upper()} EOD report & running trade learning engine...")
     engine = PaperTradingEngine()
     summary = engine.get_portfolio_summary(market)
+
+    from src.analyst.learning_engine import LearningEngine
+    learning = LearningEngine()
+    eod_learning = learning.run_daily_eod_learning(market)
 
     tg = TelegramNotifier()
     em = EmailNotifier()
 
-    tg.send_message(format_eod_report_telegram(summary, []))
+    # Build Telegram EOD Report with Profit Goal and Mistake Lessons
+    curr_sym = "₹" if market == "india" else "$"
+    target_emoji = "🎯 Goal Achieved!" if eod_learning["target_met"] else "⏳ In Progress"
+    report_text = (
+        f"📊 <b>AEGIS {market.upper()} EOD REPORT & LEARNINGS</b>\n"
+        f"──────────────────────────────\n"
+        f"💰 <b>Daily Realized P&L:</b> <b>{'+' if eod_learning['total_pnl'] >= 0 else ''}{curr_sym}{eod_learning['total_pnl']:,.2f}</b>\n"
+        f"🎯 <b>Daily Target:</b> {curr_sym}{eod_learning['daily_target']:,.2f} ({target_emoji})\n"
+        f"📈 <b>Trades:</b> {eod_learning['total_trades']} (Wins: {eod_learning['wins']} | Losses: {eod_learning['losses']})\n"
+        f"🏆 <b>Win Rate:</b> {eod_learning['win_rate_pct']}%\n"
+        f"💼 <b>Total Portfolio Value:</b> {curr_sym}{summary['total_value']:,.2f}\n"
+        f"──────────────────────────────\n"
+    )
+
+    if eod_learning["autopsies"]:
+        report_text += "🧠 <b>EOD Loss Autopsies & Lessons Learned:</b>\n"
+        for idx, a in enumerate(eod_learning["autopsies"][:3], 1):
+            report_text += (
+                f"<b>{idx}. {a.ticker}</b> ({a.strategy}) — PnL: {a.realized_pnl:+.2f} ({a.realized_pnl_pct:+.1f}%)\n"
+                f"   • Flaw: <i>{a.failure_category}</i>\n"
+                f"   • Lesson: <b>{a.prescriptive_lesson}</b>\n"
+            )
+        report_text += "──────────────────────────────\n"
+        report_text += "<i>Lessons saved to trade playbook and injected into tomorrow's prompts.</i>"
+    else:
+        report_text += "✨ <i>Zero losing trades today! Risk execution was flawless.</i>"
+
+    tg.send_message(report_text)
     email_html = format_eod_email_html(summary, [])
-    em.send_email(f"Daily Portfolio Summary — {market.upper()}", email_html)
+    em.send_email(f"Daily Portfolio & Learning Report — {market.upper()}", email_html)
 
 
 def job_monthly_advisory() -> None:

@@ -23,31 +23,59 @@ class PaperTradingEngine:
 
     def _ensure_accounts(self) -> None:
         with _conn() as conn:
-            # India Account
+            # Check if accounts need syncing with config
+            row_inr = conn.execute("SELECT initial_cash FROM accounts WHERE account_id = 'paper_inr'").fetchone()
+            if row_inr is None or row_inr["initial_cash"] != self.config.paper_trading.virtual_capital_inr:
+                self.reset_account_balances()
+                return
+
+    def reset_account_balances(self) -> None:
+        """Resets virtual paper accounts to configured settings (₹10,000 INR / $1,000 USD)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with _conn() as conn:
             conn.execute("""
-                INSERT OR IGNORE INTO accounts (account_id, currency, cash, initial_cash, updated_at)
+                INSERT INTO accounts (account_id, currency, cash, initial_cash, updated_at)
                 VALUES ('paper_inr', 'INR', ?, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    cash = excluded.cash,
+                    initial_cash = excluded.initial_cash,
+                    updated_at = excluded.updated_at
             """, (
                 self.config.paper_trading.virtual_capital_inr,
                 self.config.paper_trading.virtual_capital_inr,
-                datetime.now(timezone.utc).isoformat()
+                now
             ))
-            # US Account
             conn.execute("""
-                INSERT OR IGNORE INTO accounts (account_id, currency, cash, initial_cash, updated_at)
+                INSERT INTO accounts (account_id, currency, cash, initial_cash, updated_at)
                 VALUES ('paper_usd', 'USD', ?, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    cash = excluded.cash,
+                    initial_cash = excluded.initial_cash,
+                    updated_at = excluded.updated_at
             """, (
                 self.config.paper_trading.virtual_capital_usd,
                 self.config.paper_trading.virtual_capital_usd,
-                datetime.now(timezone.utc).isoformat()
+                now
             ))
             conn.commit()
+        logger.info(f"[Paper Engine] Reset balances: ₹{self.config.paper_trading.virtual_capital_inr:,.2f} INR | ${self.config.paper_trading.virtual_capital_usd:,.2f} USD")
 
     def get_account_balance(self, market: Literal["india", "us"]) -> float:
         acc_id = "paper_inr" if market == "india" else "paper_usd"
         with _conn() as conn:
             row = conn.execute("SELECT cash FROM accounts WHERE account_id = ?", (acc_id,)).fetchone()
             return float(row["cash"]) if row else 0.0
+
+    def get_daily_realized_pnl(self, market: Literal["india", "us"]) -> float:
+        """Returns total realized PnL for trades closed today."""
+        today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with _conn() as conn:
+            row = conn.execute("""
+                SELECT SUM(realized_pnl) as total_pnl
+                FROM positions
+                WHERE status = 'CLOSED' AND market = ? AND closed_at LIKE ?
+            """, (market, f"{today_date}%")).fetchone()
+            return float(row["total_pnl"]) if (row and row["total_pnl"] is not None) else 0.0
 
     def update_cash(self, market: Literal["india", "us"], delta: float) -> None:
         acc_id = "paper_inr" if market == "india" else "paper_usd"
@@ -67,8 +95,13 @@ class PaperTradingEngine:
         total_cost = signal.entry_price * signal.quantity
         available_cash = self.get_account_balance(signal.market)
 
-        if available_cash < total_cost:
-            logger.warning(f"[Paper Engine] Rejected {signal.ticker}: Insufficient cash ({available_cash:.2f} < {total_cost:.2f})")
+        # Margin & Leverage check for Intraday & Scalping
+        is_margin = signal.strategy in ("scalping", "intraday")
+        leverage = self.config.paper_trading.intraday_leverage_multiplier if is_margin else 1.0
+        margin_required = total_cost / leverage
+
+        if available_cash < margin_required:
+            logger.warning(f"[Paper Engine] Rejected {signal.ticker}: Insufficient margin ({available_cash:.2f} < {margin_required:.2f})")
             return None
 
         # Simulate Order Fill (Slight 0.05% slippage simulation)
@@ -91,8 +124,9 @@ class PaperTradingEngine:
         )
         save_order(order)
 
-        # Deduct Cash
-        self.update_cash(signal.market, - (filled_price * signal.quantity))
+        # Deduct Margin from Cash
+        actual_margin_blocked = round((filled_price * signal.quantity) / leverage, 2)
+        self.update_cash(signal.market, -actual_margin_blocked)
 
         # Open Position
         with _conn() as conn:
@@ -126,6 +160,8 @@ class PaperTradingEngine:
                 sl = row["stop_loss"]
                 tgt = row["target_price"]
 
+                strategy = row["strategy"]
+
                 if ticker not in latest_snapshots:
                     continue
 
@@ -133,14 +169,14 @@ class PaperTradingEngine:
                 conn.execute("UPDATE positions SET current_price = ? WHERE id = ?", (curr_p, pos_id))
 
                 if sl and curr_p <= sl:
-                    positions_to_close.append((pos_id, ticker, qty, cost, curr_p, f"STOP LOSS HIT @ {curr_p} (SL: {sl})"))
+                    positions_to_close.append((pos_id, ticker, qty, cost, curr_p, f"STOP LOSS HIT @ {curr_p} (SL: {sl})", strategy))
                 elif tgt and curr_p >= tgt:
-                    positions_to_close.append((pos_id, ticker, qty, cost, curr_p, f"TARGET HIT @ {curr_p} (TGT: {tgt})"))
+                    positions_to_close.append((pos_id, ticker, qty, cost, curr_p, f"TARGET HIT @ {curr_p} (TGT: {tgt})", strategy))
 
             conn.commit()
 
         # Execute closures outside the previous connection context
-        for pos_id, ticker, qty, cost, curr_p, reason in positions_to_close:
+        for pos_id, ticker, qty, cost, curr_p, reason, strategy in positions_to_close:
             realized_pnl = round((curr_p - cost) * qty, 2)
             pnl_pct = round((curr_p - cost) / cost * 100, 2)
             now_str = datetime.now(timezone.utc).isoformat()
@@ -152,8 +188,10 @@ class PaperTradingEngine:
                 """, (now_str, realized_pnl, pos_id))
                 conn.commit()
 
-            proceeds = curr_p * qty
-            self.update_cash(market, proceeds)
+            is_margin = strategy in ("scalping", "intraday")
+            leverage = self.config.paper_trading.intraday_leverage_multiplier if is_margin else 1.0
+            margin_returned = (cost * qty) / leverage
+            self.update_cash(market, margin_returned + realized_pnl)
 
             report = f"[EXIT] {ticker} {qty}x closed: {reason} | PnL: {'+' if realized_pnl >= 0 else ''}{realized_pnl} ({pnl_pct:+.2f}%)"
             logger.info(f"[Paper Engine] {report}")
@@ -167,7 +205,7 @@ class PaperTradingEngine:
 
         with _conn() as conn:
             rows = conn.execute("""
-                SELECT * FROM positions WHERE status = 'OPEN' AND strategy = 'intraday' AND market = ?
+                SELECT * FROM positions WHERE status = 'OPEN' AND strategy IN ('intraday', 'scalping') AND market = ?
             """, (market,)).fetchall()
 
             for row in rows:
@@ -188,7 +226,8 @@ class PaperTradingEngine:
                 """, (now_str, realized_pnl, pos_id))
                 conn.commit()
 
-            self.update_cash(market, curr_p * qty)
+            margin_returned = (cost * qty) / self.config.paper_trading.intraday_leverage_multiplier
+            self.update_cash(market, margin_returned + realized_pnl)
             report = f"[SQUARE OFF] {ticker} {qty}x intraday closed @ {curr_p} | PnL: {realized_pnl}"
             logger.warning(f"[Paper Engine] {report}")
             closed_reports.append(report)
@@ -211,6 +250,7 @@ class PaperTradingEngine:
             qty = pos["quantity"]
             cost = pos["avg_cost"]
             curr_p = pos["current_price"] or cost
+            strategy = pos.get("strategy", "swing")
             realized_pnl = round((curr_p - cost) * qty, 2)
 
             with _conn() as conn:
@@ -219,7 +259,10 @@ class PaperTradingEngine:
                 """, (now_str, realized_pnl, pos_id))
                 conn.commit()
 
-            self.update_cash(market, curr_p * qty)
+            is_margin = strategy in ("scalping", "intraday")
+            leverage = self.config.paper_trading.intraday_leverage_multiplier if is_margin else 1.0
+            margin_returned = (cost * qty) / leverage
+            self.update_cash(market, margin_returned + realized_pnl)
             report = f"[EMERGENCY CLOSE] {ticker} {qty}x closed @ {curr_p} | PnL: {realized_pnl}"
             logger.warning(f"[Paper Engine] {report}")
             closed_reports.append(report)

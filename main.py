@@ -38,7 +38,23 @@ def dry_run() -> None:
     init_advisory_db()
     init_state_table()
 
+    from src.trading.paper_engine import PaperTradingEngine
+    engine = PaperTradingEngine()
+    engine.reset_account_balances()
+
+    summary_inr = engine.get_portfolio_summary("india")
+    summary_usd = engine.get_portfolio_summary("us")
+    cfg_paper = engine.config.paper_trading
+
     print(todays_agenda())
+    print("=" * 60)
+    print("💰 REALISTIC PAPER TRADING CAPITAL & DAILY TARGETS")
+    print("=" * 60)
+    print(f"  🇮🇳 India Capital: ₹{summary_inr['cash']:,.2f} INR | Daily Target: ₹{cfg_paper.daily_profit_target_inr:,.2f} (10%)")
+    print(f"  🇺🇸 US Capital:    ${summary_usd['cash']:,.2f} USD  | Daily Target: ${cfg_paper.daily_profit_target_usd:,.2f} (15%)")
+    print(f"  ⚡ Strategies:    Scalping, Intraday, Swing, Positional")
+    print(f"  📊 Universe:      High-Velocity Mid-Caps, Small-Caps & Momentum Runners")
+    print("=" * 60)
 
     # Run instant scan on active markets
     job_market_intraday_scan("india")

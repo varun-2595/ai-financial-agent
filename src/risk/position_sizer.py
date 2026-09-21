@@ -39,13 +39,14 @@ class RiskEngine:
         current_cash: float,
         total_portfolio_value: float,
         sector_exposure_pct: float = 0.0,
+        strategy: Literal["scalping", "intraday", "swing", "positional"] = "swing",
     ) -> SizingResult:
         """
-        Calculates maximum allowed position size based on:
-        - Max 2% capital risk per trade
-        - Max 10% position value of total portfolio
-        - Max 30% sector concentration
-        - Stop loss validation (minimum 1:1.5 Risk-Reward ratio)
+        Calculates allowed position size based on:
+        - Strategy-specific capital allocation and risk cap
+        - Simulated 3x intraday margin for scalping and intraday
+        - Sector concentration limits
+        - Stop loss validation (minimum 1:1.3 Risk-Reward ratio)
         """
         if entry_price <= 0 or stop_loss <= 0 or target_price <= 0:
             return SizingResult(False, 0, entry_price, stop_loss, target_price, 0, 0, "Invalid price values")
@@ -66,31 +67,48 @@ class RiskEngine:
             risk_per_share = stop_loss - entry_price
             reward_per_share = entry_price - target_price
 
-        # Check Risk-to-Reward (min 1:1.5)
-        rr_ratio = reward_per_share / risk_per_share
-        if rr_ratio < 1.3:
-            return SizingResult(False, 0, entry_price, stop_loss, target_price, 0, 0, f"Unfavorable Risk:Reward ratio ({rr_ratio:.2f} < 1.3)")
+        # Check Risk-to-Reward (min 1:1.2 for scalping, 1:1.3 for others)
+        min_rr = 1.2 if strategy == "scalping" else 1.3
+        rr_ratio = reward_per_share / risk_per_share if risk_per_share > 0 else 0
+        if rr_ratio < min_rr:
+            return SizingResult(False, 0, entry_price, stop_loss, target_price, 0, 0, f"Unfavorable Risk:Reward ratio ({rr_ratio:.2f} < {min_rr})")
 
         # 2. Sector Concentration Guardrail
         max_sector_pct = self.config.paper_trading.max_sector_pct
         if sector_exposure_pct >= max_sector_pct:
             return SizingResult(False, 0, entry_price, stop_loss, target_price, 0, 0, f"Sector exposure ({sector_exposure_pct*100:.1f}%) exceeds limit ({max_sector_pct*100:.1f}%)")
 
-        # 3. Capital Risk Sizing (2% max loss of portfolio)
-        max_risk_pct = self.config.paper_trading.risk_per_trade_pct
+        # 3. Strategy Sizing & Margin Leverage
+        is_intraday_or_scalp = strategy in ("scalping", "intraday")
+        leverage = self.config.paper_trading.intraday_leverage_multiplier if is_intraday_or_scalp else 1.0
+
+        # Maximum loss allowed per trade
+        max_risk_pct = 0.035 if strategy == "scalping" else self.config.paper_trading.risk_per_trade_pct
         max_loss_allowed = total_portfolio_value * max_risk_pct
         qty_by_risk = int(max_loss_allowed / risk_per_share) if risk_per_share > 0 else 0
 
-        # 4. Max Position Value Cap (10% of total portfolio)
-        max_pos_pct = self.config.paper_trading.max_position_pct
-        max_val_allowed = total_portfolio_value * max_pos_pct
-        qty_by_val = int(max_val_allowed / entry_price)
+        # Max Position Value Cap
+        if strategy == "scalping":
+            max_pos_val = total_portfolio_value * 0.50 * leverage
+        elif strategy == "intraday":
+            max_pos_val = total_portfolio_value * 0.40 * leverage
+        elif strategy == "swing":
+            max_pos_val = total_portfolio_value * 0.25
+        else: # positional
+            max_pos_val = total_portfolio_value * 0.15
 
-        # 5. Cash Availability
-        qty_by_cash = int(current_cash / entry_price)
+        qty_by_val = int(max_pos_val / entry_price)
 
-        # Final Quantity is conservative minimum
+        # Cash Availability (leveraged for intraday/scalp)
+        effective_cash = current_cash * leverage if is_intraday_or_scalp else current_cash
+        qty_by_cash = int(effective_cash / entry_price)
+
+        # Conservative minimum across risk, value, and cash
         quantity = min(qty_by_risk, qty_by_val, qty_by_cash)
+
+        # If quantity calculates to 0 due to integer truncation on small accounts, allow 1 share if cash & risk permit
+        if quantity <= 0 and effective_cash >= entry_price and risk_per_share <= (max_loss_allowed * 1.5):
+            quantity = 1
 
         if quantity <= 0:
             return SizingResult(False, 0, entry_price, stop_loss, target_price, 0, 0, "Insufficient cash or position size calculates to 0")

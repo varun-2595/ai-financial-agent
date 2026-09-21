@@ -1,69 +1,131 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING WATCHLIST
-# Tickers tracked for active trading signals (intraday / swing / positional).
-# Add or remove tickers anytime — no code changes needed.
-# Strategy options: intraday | swing | positional
+# Tickers tracked for active trading signals (scalping / intraday / swing / positional).
+# Balanced across high-velocity mid-caps, small-caps, and momentum runners.
+# Strategy options: scalping | intraday | swing | positional
 # ─────────────────────────────────────────────────────────────────────────────
 
 watchlist:
   india:
-    - ticker: RELIANCE.NS
-      name: Reliance Industries
-      sector: Energy / Conglomerate
-      strategy: [swing, positional]
+    # High-Velocity Mid-Cap & Small-Cap Momentum Runners
+    - ticker: SUZLON.NS
+      name: Suzlon Energy Ltd
+      sector: Renewable Energy
+      strategy: [scalping, intraday]
 
-    - ticker: INFY.NS
-      name: Infosys Ltd
-      sector: Technology
-      strategy: [swing, positional]
+    - ticker: RVNL.NS
+      name: Rail Vikas Nigam Ltd
+      sector: Railways & Infrastructure
+      strategy: [scalping, intraday]
 
-    - ticker: HDFCBANK.NS
-      name: HDFC Bank
-      sector: Banking
-      strategy: [swing, positional]
+    - ticker: IREDA.NS
+      name: Indian Renewable Energy Dev Agency
+      sector: Green Finance
+      strategy: [scalping, intraday]
+
+    - ticker: BSE.NS
+      name: BSE Ltd
+      sector: Financial Exchanges
+      strategy: [scalping, intraday, swing]
+
+    - ticker: COCHINSHIP.NS
+      name: Cochin Shipyard Ltd
+      sector: Defence & Shipbuilding
+      strategy: [scalping, intraday]
+
+    - ticker: KALYANKJIL.NS
+      name: Kalyan Jewellers India
+      sector: Consumer & Retail
+      strategy: [scalping, intraday]
+
+    - ticker: ZOMATO.NS
+      name: Zomato Ltd
+      sector: Consumer Internet
+      strategy: [scalping, intraday, swing]
+
+    - ticker: IRFC.NS
+      name: Indian Railway Finance Corp
+      sector: Railway Finance
+      strategy: [scalping, intraday]
 
     - ticker: TATAMOTORS.NS
-      name: Tata Motors
+      name: Tata Motors Ltd
       sector: Automobile
+      strategy: [scalping, intraday]
+
+    - ticker: TRENT.NS
+      name: Trent Ltd
+      sector: Retail Outperformer
       strategy: [intraday, swing]
 
-    - ticker: ICICIBANK.NS
-      name: ICICI Bank
-      sector: Banking
+    - ticker: RELIANCE.NS
+      name: Reliance Industries
+      sector: Energy & Conglomerate
       strategy: [intraday, swing]
 
     - ticker: NIFTYBEES.NS
-      name: Nippon Nifty 50 ETF
+      name: Nippon India Nifty 50 ETF
       sector: Index ETF
       strategy: [positional]
-
-    - ticker: BANKBEES.NS
-      name: Nippon Bank ETF
-      sector: Banking ETF
-      strategy: [swing, positional]
 
   us:
-    - ticker: AAPL
-      name: Apple Inc.
-      sector: Technology
-      strategy: [swing, positional]
+    # High-Momentum Growth, Mid-Cap & Volatile Tech Runners
+    - ticker: PLTR
+      name: Palantir Technologies Inc
+      sector: AI & Enterprise Software
+      strategy: [scalping, intraday]
+
+    - ticker: SOFI
+      name: SoFi Technologies Inc
+      sector: Digital Banking & Fintech
+      strategy: [scalping, intraday]
+
+    - ticker: MARA
+      name: Marathon Digital Holdings
+      sector: Digital Assets & Compute
+      strategy: [scalping, intraday]
+
+    - ticker: COIN
+      name: Coinbase Global Inc
+      sector: Financial Technology
+      strategy: [scalping, intraday]
+
+    - ticker: HOOD
+      name: Robinhood Markets Inc
+      sector: Brokerage & Fintech
+      strategy: [scalping, intraday]
+
+    - ticker: ARM
+      name: Arm Holdings plc
+      sector: Semiconductors
+      strategy: [scalping, intraday]
+
+    - ticker: SMCI
+      name: Super Micro Computer Inc
+      sector: AI Server Hardware
+      strategy: [scalping, intraday]
+
+    - ticker: AFRM
+      name: Affirm Holdings Inc
+      sector: Consumer Lending Fintech
+      strategy: [scalping, intraday]
 
     - ticker: NVDA
-      name: NVIDIA Corp.
-      sector: Semiconductors
-      strategy: [swing]
+      name: NVIDIA Corporation
+      sector: Semiconductors & AI
+      strategy: [scalping, intraday]
 
-    - ticker: MSFT
-      name: Microsoft Corp.
+    - ticker: TSLA
+      name: Tesla Inc
+      sector: EV & Autonomous Tech
+      strategy: [scalping, intraday]
+
+    - ticker: AAPL
+      name: Apple Inc
       sector: Technology
-      strategy: [swing, positional]
-
-    - ticker: SPY
-      name: SPDR S&P 500 ETF
-      sector: Index ETF
-      strategy: [positional]
+      strategy: [intraday, swing]
 
     - ticker: QQQ
-      name: Invesco Nasdaq 100 ETF
-      sector: Index ETF
+      name: Invesco QQQ Trust
+      sector: Tech ETF
       strategy: [positional]

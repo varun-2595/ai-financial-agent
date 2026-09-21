@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from src.analyst.engine import AnalystEngine
-from src.data.models import StockSnapshot, TradeSignal
+from src.data.models import StockSnapshot, Strategy, TradeSignal
 from src.risk.position_sizer import RiskEngine
 from src.technicals.indicators import compute_technical_indicators
 from src.technicals.levels import compute_support_resistance
@@ -22,9 +22,9 @@ class SignalGenerator:
     def generate_signal(
         self,
         snapshot: StockSnapshot,
-        strategy: Literal["intraday", "swing", "positional"] = "swing",
-        current_cash: float = 100_000.0,
-        portfolio_val: float = 1_000_000.0,
+        strategy: Strategy = "scalping",
+        current_cash: float = 10_000.0,
+        portfolio_val: float = 10_000.0,
         sector_exposure_pct: float = 0.0,
     ) -> Optional[TradeSignal]:
         """
@@ -46,10 +46,16 @@ class SignalGenerator:
         direction: Literal["BUY", "SELL", "HOLD"] = "BUY"
 
         # Calculate entry, SL, and target based on strategy & technical levels
-        if strategy == "intraday":
+        if strategy == "scalping":
             entry = current_p
-            stop_loss = round(levels.support_1 if levels.support_1 < current_p else current_p * 0.99, 2)
-            target = round(levels.resistance_1 if levels.resistance_1 > current_p else current_p * 1.015, 2)
+            # Rapid momentum scalp: tight 0.8% stop loss, 1.8% quick profit target
+            stop_loss = round(current_p * 0.992, 2)
+            target = round(current_p * 1.018, 2)
+        elif strategy == "intraday":
+            entry = current_p
+            # Intraday breakout: 1.5% stop loss, 2.8% profit target
+            stop_loss = round(levels.support_1 if levels.support_1 < current_p and (current_p - levels.support_1)/current_p <= 0.02 else current_p * 0.985, 2)
+            target = round(levels.resistance_1 if levels.resistance_1 > current_p and (levels.resistance_1 - current_p)/current_p >= 0.02 else current_p * 1.028, 2)
         elif strategy == "swing":
             entry = current_p
             # Set stop loss just below key support or ATR
@@ -71,6 +77,7 @@ class SignalGenerator:
             current_cash=current_cash,
             total_portfolio_value=portfolio_val,
             sector_exposure_pct=sector_exposure_pct,
+            strategy=strategy,
         )
 
         if not size_res.allowed:
