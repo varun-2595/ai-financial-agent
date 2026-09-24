@@ -89,7 +89,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Observability & Multi-Agent Intelligence:</b>\n"
         "• <code>/journal</code> — View recent immutable trade decision entries\n"
         "• <code>/scorecard</code> — View multi-agent calibration & accuracy scorecards\n"
-        "• <code>/analyze &lt;TICKER&gt;</code> — Real-time multi-agent + technical evaluation"
+        "• <code>/analyze &lt;TICKER&gt;</code> — Real-time multi-agent + technical evaluation\n"
+        "• <code>/catalysts &lt;TICKER&gt;</code> — Real-time news catalyst & headline risk intelligence"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -522,6 +523,56 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+async def cmd_catalysts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("ℹ️ <b>Usage:</b> <code>/catalysts &lt;TICKER&gt;</code>\nExample: <code>/catalysts NVDA</code> or <code>/catalysts RELIANCE.NS</code>", parse_mode="HTML")
+        return
+
+    raw_ticker = context.args[0].upper().strip()
+    is_india = raw_ticker.endswith(".NS") or raw_ticker.endswith(".BO")
+    market = "india" if is_india else "us"
+    ticker = raw_ticker
+
+    await update.message.reply_text(f"🔍 Fetching live breaking news & analyzing catalysts for <code>{ticker}</code>...", parse_mode="HTML")
+
+    from src.news.catalyst_engine import NewsCatalystEngine
+    from src.news.fetcher import RealTimeNewsFetcher
+
+    fetcher = RealTimeNewsFetcher()
+    engine = NewsCatalystEngine()
+
+    news_items = fetcher.fetch_news_for_ticker(ticker, market=market, max_articles=5)
+    if not news_items:
+        await update.message.reply_text(f"📰 No recent breaking headlines found for <code>{ticker}</code>.", parse_mode="HTML")
+        return
+
+    cat_report = engine.evaluate_catalysts(ticker, market=market, news_items=news_items)
+
+    sentiment_emoji = "🚀" if cat_report.sentiment_label == "BULLISH_CATALYST" else ("🛑" if cat_report.has_headline_risk else "⚖️")
+    risk_badge = "⚠️ <b>HEADLINE RISK DETECTED</b>\n" if cat_report.has_headline_risk else ""
+
+    news_list = "\n".join([
+        f"• <a href=\"{html.escape(item.url or '')}\">{html.escape(item.title)}</a> <i>({html.escape(item.publisher or 'News')})</i>"
+        if item.url else f"• {html.escape(item.title)} <i>({html.escape(item.publisher or 'News')})</i>"
+        for item in news_items[:4]
+    ])
+
+    text = (
+        f"{sentiment_emoji} <b>CATALYST INTELLIGENCE: {ticker}</b>\n"
+        f"──────────────────────────────\n"
+        f"{risk_badge}"
+        f"<b>Category:</b> {cat_report.catalyst_category}\n"
+        f"<b>Sentiment Score:</b> <code>{cat_report.sentiment_score:+.2f}</code> ({cat_report.sentiment_label})\n"
+        f"<b>Summary:</b> {html.escape(cat_report.catalyst_summary)}\n\n"
+        f"📰 <b>Recent Headlines:</b>\n{news_list}"
+    )
+
+    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 # ── Bot Server Application ───────────────────────────────────────────────────
 
 class AegisTelegramBot:
@@ -554,6 +605,8 @@ class AegisTelegramBot:
         self.app.add_handler(CommandHandler("include", cmd_include))
         self.app.add_handler(CommandHandler("exclude", cmd_exclude))
         self.app.add_handler(CommandHandler("analyze", cmd_analyze))
+        self.app.add_handler(CommandHandler("catalysts", cmd_catalysts))
+        self.app.add_handler(CommandHandler("news", cmd_catalysts))
 
     def run_polling(self) -> None:
         """Starts the long-polling loop (blocking the calling thread)."""

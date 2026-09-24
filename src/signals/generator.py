@@ -8,6 +8,7 @@ from typing import Literal, Optional
 
 from src.analyst.engine import AnalystEngine
 from src.data.models import StockSnapshot, Strategy, TradeSignal
+from src.news.catalyst_engine import NewsCatalystEngine
 from src.risk.position_sizer import RiskEngine
 from src.technicals.indicators import compute_technical_indicators
 from src.technicals.levels import compute_support_resistance
@@ -15,9 +16,15 @@ from src.utils.logger import logger
 
 
 class SignalGenerator:
-    def __init__(self, analyst: Optional[AnalystEngine] = None, risk: Optional[RiskEngine] = None):
+    def __init__(
+        self,
+        analyst: Optional[AnalystEngine] = None,
+        risk: Optional[RiskEngine] = None,
+        catalyst_engine: Optional[NewsCatalystEngine] = None,
+    ):
         self.analyst = analyst or AnalystEngine()
         self.risk = risk or RiskEngine()
+        self.catalyst_engine = catalyst_engine or NewsCatalystEngine()
 
     def generate_signal(
         self,
@@ -26,25 +33,45 @@ class SignalGenerator:
         current_cash: float = 10_000.0,
         portfolio_val: float = 10_000.0,
         sector_exposure_pct: float = 0.0,
+        skip_db_check: bool = False,
+        force_heuristic: bool = False,
     ) -> Optional[TradeSignal]:
         """
-        Synthesizes technical conditions and LLM analysis to produce actionable TradeSignal.
+        Synthesizes technical conditions, news catalysts, and LLM analysis to produce actionable TradeSignal.
         """
         # Prevent duplicate entries if a position in this ticker is already open
-        try:
-            from src.db.trading_store import get_open_positions
-            open_pos = get_open_positions(market=snapshot.market)
-            if any(p["ticker"] == snapshot.ticker for p in open_pos):
-                logger.debug(f"[Signal] Position already active for {snapshot.ticker}; skipping duplicate.")
-                return None
-        except Exception:
-            pass
+        if not skip_db_check:
+            try:
+                from src.db.trading_store import get_open_positions
+                open_pos = get_open_positions(market=snapshot.market)
+                if any(p["ticker"] == snapshot.ticker for p in open_pos):
+                    logger.debug(f"[Signal] Position already active for {snapshot.ticker}; skipping duplicate.")
+                    return None
+            except Exception:
+                pass
 
-        # 1. Technical calculations
+        use_heuristic = force_heuristic or getattr(self.analyst, "force_heuristic", False)
+
+        # 1. Headline Risk / Catalyst Gatekeeper
+        cat_report = None
+        if snapshot.recent_news:
+            cat_report = self.catalyst_engine.evaluate_catalysts(
+                ticker=snapshot.ticker,
+                market=snapshot.market,
+                news_items=snapshot.recent_news,
+                force_heuristic=use_heuristic,
+            )
+            if cat_report.has_headline_risk:
+                logger.warning(
+                    f"[Signal] 🚫 Trade aborted for {snapshot.ticker} due to headline risk: {cat_report.catalyst_summary}"
+                )
+                return None
+
+        # 2. Technical calculations
         tech = compute_technical_indicators(snapshot.history)
         levels = compute_support_resistance(snapshot.history)
 
-        # 2. Analyst evaluation
+        # 3. Analyst evaluation
         analysis = self.analyst.analyze_stock(snapshot)
 
         # Only trigger buy on high conviction

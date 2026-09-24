@@ -18,6 +18,7 @@ from src.notifier.formatter import (
 )
 from src.notifier.email_sender import EmailNotifier
 from src.notifier.telegram_bot import TelegramNotifier
+from src.screener.dynamic_scanner import DynamicOpportunityScanner
 from src.screener.screener import MarketScreener
 from src.screener.watchlist_manager import get_active_tickers
 from src.signals.generator import SignalGenerator
@@ -52,7 +53,16 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
     sig_gen = SignalGenerator()
     tg = TelegramNotifier()
 
-    # 1. Fetch current active tickers for this market
+    # Dynamic Opportunity Discovery: Discover breaking momentum runners & volume spikes
+    try:
+        scanner = DynamicOpportunityScanner()
+        newly_added = scanner.sync_dynamic_opportunities_to_watchlist(market=market, top_n=10)
+        if newly_added:
+            logger.info(f"[Job] Discovered {len(newly_added)} new dynamic runners for {market.upper()}: {newly_added}")
+    except Exception as scan_err:
+        logger.warning(f"[Job] Dynamic discovery encountered minor error: {scan_err}")
+
+    # 1. Fetch current active tickers for this market (includes newly discovered dynamic runners)
     tickers_info = get_active_tickers(market=market)
     tickers = [t["ticker"] for t in tickers_info]
 

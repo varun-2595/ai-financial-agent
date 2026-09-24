@@ -98,7 +98,7 @@ class BacktestEngine:
         # Risk engine & signal generator (with offline heuristic analyst)
         self.risk_engine = RiskEngine()
         # Force offline heuristic analyst to prevent live Gemini calls during backtest
-        offline_analyst = AnalystEngine(api_key=None)
+        offline_analyst = AnalystEngine(api_key=None, force_heuristic=True)
         self.signal_generator = SignalGenerator(analyst=offline_analyst, risk=self.risk_engine)
 
         # Portfolio state tracking
@@ -273,6 +273,8 @@ class BacktestEngine:
                         strategy=self.config.strategy,
                         current_cash=self.cash,
                         portfolio_val=current_portfolio_nav,
+                        skip_db_check=True,
+                        force_heuristic=True,
                     )
 
                     if signal and signal.quantity > 0:

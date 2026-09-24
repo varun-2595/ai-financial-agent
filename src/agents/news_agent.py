@@ -17,6 +17,9 @@ from src.rag.citation import CitationVerifier
 from src.rag.retriever import FinancialRAGRetriever
 
 
+from src.news.fetcher import RealTimeNewsFetcher
+
+
 class NewsAgent(BaseAgent):
     """Specialized agent for news sentiment and catalyst analysis with RAG grounding."""
 
@@ -24,6 +27,7 @@ class NewsAgent(BaseAgent):
         self,
         router: Optional[ModelRouter] = None,
         retriever: Optional[FinancialRAGRetriever] = None,
+        news_fetcher: Optional[RealTimeNewsFetcher] = None,
     ):
         super().__init__(
             name="NewsAgent",
@@ -32,6 +36,7 @@ class NewsAgent(BaseAgent):
             router=router,
         )
         self.retriever = retriever or FinancialRAGRetriever()
+        self.news_fetcher = news_fetcher or RealTimeNewsFetcher()
 
     def analyze(
         self,
@@ -39,9 +44,18 @@ class NewsAgent(BaseAgent):
         query_override: Optional[str] = None,
     ) -> AgentSignalOutput:
         """Evaluate recent news items and corporate catalysts with filing grounding."""
+        news_items = snapshot.recent_news
+        if not news_items:
+            # Fetch live breaking news via RealTimeNewsFetcher
+            news_items = self.news_fetcher.fetch_news_for_ticker(
+                ticker=snapshot.ticker,
+                market=snapshot.market,
+                max_articles=5,
+            )
+
         news_text = ""
-        if snapshot.recent_news:
-            for idx, item in enumerate(snapshot.recent_news[:5], 1):
+        if news_items:
+            for idx, item in enumerate(news_items[:5], 1):
                 date_str = item.published_at.strftime("%Y-%m-%d") if item.published_at else "Recent"
                 news_text += f"{idx}. [{date_str}] {item.title} ({item.publisher or 'News'})\n"
         else:
@@ -78,7 +92,7 @@ MANDATORY EVIDENCE RULES:
         )
 
         # Check if there is zero evidence in both headlines and filings
-        if not snapshot.recent_news and not retrieval.has_sufficient_evidence:
+        if not news_items and not retrieval.has_sufficient_evidence:
             return AgentSignalOutput(
                 agent=self.name,
                 signal="HOLD",
@@ -95,8 +109,8 @@ MANDATORY EVIDENCE RULES:
         )
 
         # Add headline evidence
-        if snapshot.recent_news:
-            for item in snapshot.recent_news[:3]:
+        if news_items:
+            for item in news_items[:3]:
                 evidence_bullets.append(f"Headline: \"{item.title}\" ({item.publisher or 'News'})")
 
         return AgentSignalOutput(
@@ -112,17 +126,19 @@ MANDATORY EVIDENCE RULES:
         self,
         snapshot: StockSnapshot,
         retrieval: Optional[Any] = None,
+        news_items: Optional[list[NewsItem]] = None,
     ) -> AgentSignalOutput:
         """Deterministic rule-based news sentiment evaluation."""
-        news_count = len(snapshot.recent_news) if snapshot.recent_news else 0
+        items_to_use = news_items if news_items is not None else snapshot.recent_news
+        news_count = len(items_to_use) if items_to_use else 0
         positive_keywords = ["growth", "beat", "profit", "expansion", "partnership", "upgrade", "record", "dividend"]
         negative_keywords = ["miss", "investigation", "downgrade", "loss", "lawsuit", "delay", "decline", "warning"]
 
         pos_score = 0
         neg_score = 0
 
-        if snapshot.recent_news:
-            for item in snapshot.recent_news:
+        if items_to_use:
+            for item in items_to_use:
                 text = (item.title + " " + (item.summary or "")).lower()
                 for kw in positive_keywords:
                     if kw in text:
