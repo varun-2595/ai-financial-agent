@@ -7,11 +7,15 @@ agent:
   version: "1.0.0"
   log_level: "INFO"        # overridden by LOG_LEVEL env var
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
+# ── LLM & Multi-Agent Inference ───────────────────────────────────────────────
 llm:
-  provider: "gemini"
+  provider: "hybrid"            # uses local M5 node (10B model) + Gemini fallback
   model: "gemini-3.8-flash"
   fallback_model: "gemini-3.6-flash"
+  local_enabled: true
+  local_endpoint: "http://127.0.0.1:11434/v1"
+  local_model: "aegis-10b-financial"
+  local_timeout_seconds: 5.0
   max_retries: 3
   retry_delay_seconds: 5
 

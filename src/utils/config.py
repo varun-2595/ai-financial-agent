@@ -25,9 +25,15 @@ class LLMSettings(BaseModel):
     provider: str = "gemini"
     model: str = "gemini-3.8-flash"
     fallback_model: str = "gemini-3.6-flash"
+    local_enabled: bool = True
+    local_endpoint: str = "http://localhost:11434/v1"
+    local_model: str = "aegis-10b-financial"
+    local_timeout_seconds: float = 5.0
     temperature: float = 0.2
     top_p: float = 0.8
     max_output_tokens: int = 4096
+    max_retries: int = 3
+    retry_delay_seconds: int = 5
 
 
 class PaperTradingSettings(BaseModel):

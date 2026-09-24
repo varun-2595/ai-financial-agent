@@ -12,7 +12,7 @@ from src.gateway.gemini_provider import GeminiProvider
 from src.gateway.local_provider import LocalModelProvider
 
 
-def check_local_model_available(endpoint: str = "http://localhost:11434/v1") -> bool:
+def check_local_model_available(endpoint: str | None = None) -> bool:
     """Return True if local M5 inference endpoint is reachable."""
     return LocalModelProvider(endpoint=endpoint).is_available()
 
