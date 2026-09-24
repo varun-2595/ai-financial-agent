@@ -62,6 +62,9 @@ from src.db.trading_store import (
     save_order,
     save_signal,
 )
+from src.journal.evaluator import PostTradeEvaluator
+from src.journal.journal_store import DecisionJournalStore
+from src.journal.models import DecisionJournalEntry, TradeEvaluation, AgentScorecard
 from src.risk.models import PortfolioRiskState, RiskDecision
 from src.risk.portfolio_risk_manager import PortfolioRiskManager
 from src.trading.fees import DEFAULT_FEE_SCHEDULE, FeeSchedule
@@ -74,10 +77,12 @@ class PaperTradingEngine:
         self,
         fee_schedule: Optional[FeeSchedule] = None,
         risk_manager: Optional[PortfolioRiskManager] = None,
+        journal_store: Optional[DecisionJournalStore] = None,
     ):
         self.config = get_config()
         self.fees = fee_schedule or DEFAULT_FEE_SCHEDULE
         self.risk_manager = risk_manager or PortfolioRiskManager()
+        self.journal_store = journal_store or DecisionJournalStore()
         init_trading_db()
         self._ensure_accounts()
 
@@ -311,12 +316,17 @@ class PaperTradingEngine:
 
     # ── Trade execution ────────────────────────────────────────────────────────
 
-    def execute_signal(self, signal: TradeSignal) -> Optional[Order]:
+    def execute_signal(
+        self,
+        signal: TradeSignal,
+        journal_entry: Optional[DecisionJournalEntry] = None,
+    ) -> Optional[Order]:
         """
         Execute a paper BUY order from a TradeSignal after deterministic Risk Engine gatekeeper.
 
         Order execution flow:
         AI Proposal → Portfolio Manager → PortfolioRiskManager (APPROVE/REDUCE/REJECT) → Execution.
+        Also records immutable pre-trade decision in DecisionJournalStore.
         """
         save_signal(signal)
 
@@ -324,12 +334,56 @@ class PaperTradingEngine:
             logger.warning(f"[Paper Engine] Skipping signal with direction={signal.direction}")
             return None
 
+        # ── Pre-trade Decision Journal Initialization ──────────────────────
+        req_qty = signal.quantity
+        if journal_entry is None:
+            journal_id = f"DEC-{uuid.uuid4().hex[:8].upper()}"
+            gen_at = signal.generated_at or datetime.now(timezone.utc)
+            journal_rec = DecisionJournalEntry(
+                journal_id=journal_id,
+                timestamp=gen_at,
+                symbol=signal.ticker,
+                market=signal.market,
+                strategy=signal.strategy,
+                direction=signal.direction,
+                market_snapshot={
+                    "entry_price": signal.entry_price,
+                    "stop_loss": signal.stop_loss,
+                    "target_price": signal.target_price,
+                },
+                agent_outputs={
+                    "SignalGenerator": {
+                        "signal": signal.direction,
+                        "confidence": signal.confidence,
+                        "reasons": [signal.reasoning] if signal.reasoning else [],
+                    }
+                },
+                confidence=signal.confidence,
+                evidence=[f"Signal reasoning: {signal.reasoning}"] if signal.reasoning else [],
+                final_thesis=signal.reasoning or f"Strategy signal on {signal.ticker}",
+                risk_decision="PENDING",
+                requested_quantity=req_qty,
+                approved_quantity=req_qty,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                target_price=signal.target_price,
+                status="PROPOSED",
+            )
+        else:
+            journal_rec = journal_entry
+
         # ── Deterministic Portfolio-Level Risk Gate ─────────────────────────
         risk_state = self.get_portfolio_risk_state(signal.market)
         risk_eval = self.risk_manager.evaluate_trade(signal, risk_state)
 
+        journal_rec.risk_decision = risk_eval.decision.value
+        journal_rec.risk_reasons = risk_eval.violations or ([risk_eval.reason] if risk_eval.reason else [])
+        journal_rec.approved_quantity = risk_eval.approved_quantity
+
         if risk_eval.decision == RiskDecision.REJECT:
             logger.warning(f"[Paper Engine] ❌ Trade REJECTED by Risk Engine: {risk_eval.reason}")
+            journal_rec.status = "REJECTED"
+            self.journal_store.record_decision(journal_rec)
             return None
 
         if risk_eval.decision == RiskDecision.REDUCE:
@@ -361,6 +415,9 @@ class PaperTradingEngine:
                 f"[Paper Engine] Rejected {signal.ticker}: Insufficient cash "
                 f"({available_cash:.2f} < {total_deduction:.2f} needed)"
             )
+            journal_rec.status = "REJECTED"
+            journal_rec.risk_reasons.append("Insufficient cash for margin and fees")
+            self.journal_store.record_decision(journal_rec)
             return None
 
         # ── Build & persist order ──────────────────────────────────────────
@@ -411,6 +468,12 @@ class PaperTradingEngine:
                           ref_order_id=order_id, ref_position_id=pos_id,
                           description=f"Entry fees {signal.ticker}")
             conn.commit()
+
+        # ── Record executed decision journal entry ─────────────────────────
+        journal_rec.order_id = order_id
+        journal_rec.position_id = pos_id
+        journal_rec.status = "EXECUTED"
+        self.journal_store.record_decision(journal_rec)
 
         logger.success(
             f"[Paper Engine] 🚀 FILLED {order.quantity}×{order.ticker} @ {filled_price}"
@@ -487,6 +550,39 @@ class PaperTradingEngine:
                           ref_position_id=pos_id,
                           description=f"Net PnL {ticker} {pnl_pct:+.2f}%")
             conn.commit()
+
+        # ── Post-Trade Evaluation & Decision Journal update ─────────────────
+        try:
+            journal_entry = self.journal_store.get_decision_by_position_id(pos_id)
+            if journal_entry:
+                now_dt = datetime.now(timezone.utc)
+                entry_time = journal_entry.timestamp
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                holding_sec = max(0.0, (now_dt - entry_time).total_seconds())
+
+                self.journal_store.update_decision_exit(
+                    journal_id=journal_entry.journal_id,
+                    exit_price=exit_price,
+                    exit_timestamp=now_dt,
+                    exit_reason=reason,
+                    realized_pnl=net_pnl,
+                    return_pct=pnl_pct,
+                    holding_period_seconds=holding_sec,
+                )
+                updated_entry = self.journal_store.get_decision(journal_entry.journal_id)
+                if updated_entry:
+                    evaluation = PostTradeEvaluator.evaluate(
+                        entry=updated_entry,
+                        exit_price=exit_price,
+                        exit_timestamp=now_dt,
+                        exit_reason=reason,
+                        realized_pnl=net_pnl,
+                        return_pct=pnl_pct,
+                    )
+                    self.journal_store.record_evaluation(evaluation)
+        except Exception as e:
+            logger.error(f"[Paper Engine] Failed to record post-trade evaluation for pos_id={pos_id}: {e}")
 
         pnl_sign = "+" if net_pnl >= 0 else ""
         report = (
@@ -810,10 +906,27 @@ class PaperTradingEngine:
             "total_value": nav["nav"],
         }
 
-    # ── Ledger access ──────────────────────────────────────────────────────────
+    # ── Ledger & Decision Journal access ───────────────────────────────────────
 
     def get_transaction_ledger(
         self, market: Literal["india", "us"], limit: int = 50
     ) -> list[dict]:
         """Returns the most recent ledger entries for this market's account."""
         return get_ledger(self._acc_id(market), limit=limit)
+
+    def get_journal_entries(
+        self, symbol: Optional[str] = None, status: Optional[str] = None, limit: int = 100
+    ) -> list[DecisionJournalEntry]:
+        """Retrieve historical decision journal snapshots."""
+        return self.journal_store.get_journal_entries(symbol=symbol, status=status, limit=limit)
+
+    def get_trade_evaluations(
+        self, symbol: Optional[str] = None, limit: int = 100
+    ) -> list[TradeEvaluation]:
+        """Retrieve post-trade evaluations and autopsy records."""
+        return self.journal_store.get_evaluations(symbol=symbol, limit=limit)
+
+    def get_agent_scorecards(self) -> dict[str, AgentScorecard]:
+        """Retrieve cumulative agent accuracy and calibration scorecards."""
+        return self.journal_store.get_agent_scorecards()
+
