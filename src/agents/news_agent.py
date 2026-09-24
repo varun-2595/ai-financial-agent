@@ -73,7 +73,7 @@ MANDATORY EVIDENCE RULES:
 """
         raw_output = self._query_gateway(
             user_prompt=prompt,
-            fallback_handler=lambda s: self._heuristic_fallback(s, retrieval),
+            fallback_handler=lambda snapshot=snapshot, **kw: self._heuristic_fallback(snapshot, retrieval),
             snapshot=snapshot,
         )
 

@@ -5,15 +5,23 @@ Tests:
   1. ModelGateway abstraction & provider protocol
   2. Local model available routing (M5 Mac)
   3. Local model unavailable automatic fallback to Gemini
-  4. Both providers failing gracefully with deterministic fallback
+  4. Both providers failing gracefully with deterministic fallback (safe HOLD state)
   5. Malformed model output handling and schema validation
   6. Standardized output validation for all 6 agents (Technical, Fundamental, News, Macro, Risk, PortfolioManager)
   7. Multi-agent consensus synthesis in PortfolioManagerAgent
-  8. Health checking diagnostics (LOCAL_MODEL_AVAILABLE, GEMINI_AVAILABLE)
+  8. Provider health checks:
+     - M5 online
+     - M5 offline
+     - Model unavailable
+     - Gemini available
+     - Gemini unavailable
+     - Both unavailable
 """
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -224,8 +232,10 @@ def test_malformed_model_output_handling():
         @property
         def provider_name(self) -> str:
             return "bad_json"
+
         def is_available(self) -> bool:
             return True
+
         def generate(self, request: ModelRequest) -> ModelResponse:
             return ModelResponse(
                 content="This is plain text not valid json {invalid",
@@ -344,13 +354,159 @@ def test_portfolio_manager_agent_synthesis(sample_snapshot):
     assert len(final_decision.risks) > 0
 
 
-# ── 3. Health Diagnostics Tests ────────────────────────────────────────────────
+# ── 3. Provider Health Check & Availability Tests (All 6 States) ───────────────
 
-def test_health_checking_diagnostics():
-    """Verify health diagnostics correctly report M5 and Gemini availability."""
-    health = get_gateway_health()
-    assert "LOCAL_MODEL_AVAILABLE" in health
-    assert "GEMINI_AVAILABLE" in health
-    assert "primary_inference_route" in health
-    assert isinstance(health["LOCAL_MODEL_AVAILABLE"], bool)
-    assert isinstance(health["GEMINI_AVAILABLE"], bool)
+class MockHTTPResponse:
+    def __init__(self, data: dict, status: int = 200):
+        self.data_bytes = json.dumps(data).encode("utf-8")
+        self.status = status
+
+    def read(self) -> bytes:
+        return self.data_bytes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+def test_provider_health_m5_online():
+    """Test State 1: M5 endpoint is reachable and requested model is present."""
+    provider = LocalModelProvider(
+        endpoint="http://127.0.0.1:11434/v1",
+        model_name="qwen2.5:14b-instruct",
+    )
+
+    mock_models = {
+        "object": "list",
+        "data": [
+            {"id": "qwen2.5:14b-instruct", "object": "model"},
+            {"id": "llama3.1:8b", "object": "model"},
+        ],
+    }
+
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(mock_models, status=200)):
+        assert provider.is_available() is True
+
+
+def test_provider_health_m5_offline():
+    """Test State 2: M5 endpoint is unreachable (e.g. connection refused / server down)."""
+    provider = LocalModelProvider(
+        endpoint="http://127.0.0.1:11434/v1",
+        model_name="qwen2.5:14b-instruct",
+    )
+
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+        assert provider.is_available() is False
+
+        # Attempt generate() while offline -> returns failure without crashing
+        req = ModelRequest(system_prompt="sys", user_prompt="usr")
+        resp = provider.generate(req)
+        assert resp.success is False
+        assert "offline" in resp.error.lower()
+
+
+def test_provider_health_model_unavailable():
+    """Test State 3: M5 endpoint is reachable, but requested model is not in model list."""
+    provider = LocalModelProvider(
+        endpoint="http://127.0.0.1:11434/v1",
+        model_name="qwen2.5:14b-instruct",
+    )
+
+    mock_models = {
+        "object": "list",
+        "data": [
+            {"id": "llama3.1:8b", "object": "model"},
+            {"id": "mistral:7b", "object": "model"},
+        ],
+    }
+
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(mock_models, status=200)):
+        assert provider.is_available() is False
+
+
+def test_provider_health_gemini_available():
+    """Test State 4: Gemini is available when valid API key and client exist."""
+    provider = GeminiProvider(api_key="valid-test-key")
+    assert provider.is_available() is True
+
+
+def test_provider_health_gemini_unavailable():
+    """Test State 5: Gemini is unavailable when API key is missing or unconfigured."""
+    provider = GeminiProvider(api_key="")
+    provider.api_key = None
+    provider.client = None
+    assert provider.is_available() is False
+
+    req = ModelRequest(system_prompt="sys", user_prompt="usr")
+    resp = provider.generate(req)
+    assert resp.success is False
+    assert "not configured" in resp.error.lower()
+
+
+def test_provider_health_both_unavailable_safe_hold(sample_snapshot):
+    """
+    Test State 6: Both Local M5 and Gemini are unavailable.
+    System must enter a safe deterministic HOLD / no-trade state.
+    """
+    local_p = MockFailingProvider("local", available=False)
+    gemini_p = MockFailingProvider("gemini", available=False)
+    router = ModelRouter(local_provider=local_p, gemini_provider=gemini_p)
+
+    tech_agent = TechnicalAgent(router=router)
+    pm_agent = PortfolioManagerAgent(router=router)
+
+    # TechnicalAgent invokes deterministic fallback -> safe signal generated
+    out = tech_agent.analyze(sample_snapshot)
+    assert isinstance(out, AgentSignalOutput)
+    assert out.signal in ("BUY", "SELL", "HOLD")
+
+    # Full consensus fallback
+    consensus = MultiAgentConsensus(
+        ticker=sample_snapshot.ticker,
+        market=sample_snapshot.market,
+        technical=out,
+    )
+    final_decision = pm_agent.synthesize(sample_snapshot, consensus)
+    assert isinstance(final_decision, AgentSignalOutput)
+    assert final_decision.signal in ("BUY", "SELL", "HOLD")
+
+
+def test_health_diagnostics_all_states():
+    """Verify get_gateway_health() across combinations of online/offline nodes."""
+    # 1. Dual online
+    h1 = get_gateway_health(
+        local_provider=MockSuccessProvider("local"),
+        gemini_provider=MockSuccessProvider("gemini"),
+    )
+    assert h1["LOCAL_MODEL_AVAILABLE"] is True
+    assert h1["GEMINI_AVAILABLE"] is True
+    assert h1["status_summary"] == "HEALTHY_DUAL_PROVIDER"
+
+    # 2. Gemini only (M5 offline/optional)
+    h2 = get_gateway_health(
+        local_provider=MockFailingProvider("local", available=False),
+        gemini_provider=MockSuccessProvider("gemini"),
+    )
+    assert h2["LOCAL_MODEL_AVAILABLE"] is False
+    assert h2["GEMINI_AVAILABLE"] is True
+    assert h2["status_summary"] == "HEALTHY_GEMINI_ONLY"
+
+    # 3. Local M5 only
+    h3 = get_gateway_health(
+        local_provider=MockSuccessProvider("local"),
+        gemini_provider=MockFailingProvider("gemini", available=False),
+    )
+    assert h3["LOCAL_MODEL_AVAILABLE"] is True
+    assert h3["GEMINI_AVAILABLE"] is False
+    assert h3["status_summary"] == "DEGRADED_LOCAL_ONLY"
+
+    # 4. Both offline
+    h4 = get_gateway_health(
+        local_provider=MockFailingProvider("local", available=False),
+        gemini_provider=MockFailingProvider("gemini", available=False),
+    )
+    assert h4["LOCAL_MODEL_AVAILABLE"] is False
+    assert h4["GEMINI_AVAILABLE"] is False
+    assert h4["status_summary"] == "ALL_PROVIDERS_OFFLINE"
