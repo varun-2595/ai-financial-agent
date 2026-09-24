@@ -19,7 +19,7 @@ flowchart TD
         Filings --> RAG["Evidence-Grounded RAG Engine"]
     end
 
-    subgraph MultiAgent["2. Multi-Agent Consensus (Local M5 + Gemini)"]
+    subgraph MultiAgent["2. Multi-Agent Consensus"]
         RAG --> FundAgent["Fundamental Agent"]
         RAG --> NewsAgent["News & Sentiment Agent"]
         Screener --> TechAgent["Technical Agent"]
@@ -31,7 +31,7 @@ flowchart TD
         MacroAgent --> PM
         RiskAgent["Risk Agent"] --> PM
         
-        Gateway["Model Gateway & Router\n(Local 10B M5 Mac ↔ Remote Gemini Fallback)"] -.-> MultiAgent
+        Gateway["Model Gateway & Router\n(Local 10B M5 Mac ↔ Remote Gemini Fallback)"] --> PM
     end
 
     subgraph DeterministicRisk["3. Deterministic Portfolio Risk Engine (Hard Gatekeeper)"]
