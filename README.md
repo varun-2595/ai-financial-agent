@@ -57,7 +57,7 @@ flowchart TD
 
 ## 🏗️ Phase-by-Phase System Architecture
 
-Aegis is engineered in 7 modular, production-ready phases:
+Aegis is engineered in 8 modular, production-ready phases:
 
 | Phase | Subsystem | Description | Documentation |
 | :--- | :--- | :--- | :--- |
@@ -68,6 +68,8 @@ Aegis is engineered in 7 modular, production-ready phases:
 | **Phase 5** | **Evidence-Grounded Financial RAG** | Document parsers for SEC 10-K/10-Q and Indian exchange filings, metadata breadcrumbs, local embeddings cache, and strict no-fabrication citations. | [`docs/phase-5.md`](docs/phase-5.md) |
 | **Phase 6** | **Portfolio-Level Risk Management** | 10 hard deterministic limits (Position Caps, Sector Concentration, Portfolio Beta, ADV Liquidity, Daily Loss & Drawdown Circuit Breakers). | [`docs/phase-6.md`](docs/phase-6.md) |
 | **Phase 7** | **Immutable Decision Journal & Attribution** | Point-in-time decision snapshots, post-trade autopsies, directional accuracy, thesis validation, root-cause failure taxonomy, and per-agent scorecards. | [`docs/phase-7.md`](docs/phase-7.md) |
+| **Phase 8** | **Walk-Forward Validation & Robustness** | Rolling In-Sample/Out-of-Sample validation, Walk-Forward Efficiency (WFE), and automated defect detection (overfitting, look-ahead bias, unstable variance, regime dependence). | [`docs/phase-8.md`](docs/phase-8.md) |
+
 
 ---
 
