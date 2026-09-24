@@ -5,6 +5,7 @@ services:
     build: .
     container_name: aegis_financial_agent
     restart: unless-stopped
+    network_mode: "host"
     env_file:
       - .env
     volumes:
