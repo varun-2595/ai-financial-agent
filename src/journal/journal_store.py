@@ -312,68 +312,139 @@ class DecisionJournalStore:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_entry(r) for r in rows]
 
-    # ── Agent Performance Scorecards (Observability Only) ──────────────────────
+    def get_recent_decisions(self, limit: int = 5) -> list[DecisionJournalEntry]:
+        """Fetch the most recent decision entries."""
+        return self.get_journal_entries(limit=limit)
 
-    def get_agent_scorecards(self) -> dict[str, AgentScorecard]:
+    def get_recent_closed_trades(self, limit: int = 5) -> list[dict[str, Any]]:
         """
-        Aggregate post-trade attribution metrics across all historical evaluations.
-        Strictly for observability and performance measurement.
+        Fetch recent closed trades joining decision journal and trade evaluations
+        for Telegram /journal reporting.
         """
-        scorecards: dict[str, AgentScorecard] = {}
-        evals = self.get_evaluations(limit=10_000)
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT
+                    j.journal_id, j.symbol, j.market, j.strategy, j.direction,
+                    j.entry_price, j.exit_price, j.realized_pnl, j.return_pct,
+                    j.holding_period_seconds, j.final_thesis, j.agent_outputs,
+                    j.exit_reason, j.exit_timestamp,
+                    e.thesis_notes, e.major_failure_reason, e.failure_details
+                FROM decision_journal j
+                LEFT JOIN trade_evaluations e ON j.journal_id = e.journal_id
+                WHERE j.status = 'CLOSED' AND j.realized_pnl IS NOT NULL
+                ORDER BY j.exit_timestamp DESC, j.updated_at DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
 
-        for ev in evals:
-            pnl = ev.realized_pnl
-            ret = ev.return_pct
+            results: list[dict[str, Any]] = []
+            for r in rows:
+                agent_outs = json.loads(r["agent_outputs"]) if r["agent_outputs"] else {}
+                pm_decision = agent_outs.get("PortfolioManagerAgent", {})
+                pm_driver = ""
+                if isinstance(pm_decision, dict):
+                    reasons = pm_decision.get("reasons", [])
+                    if reasons:
+                        pm_driver = reasons[0]
+                if not pm_driver:
+                    pm_driver = r["final_thesis"][:100]
 
-            for agent_name, att in ev.agent_accuracy.items():
-                if agent_name not in scorecards:
-                    scorecards[agent_name] = AgentScorecard(agent_name=agent_name)
+                learning_note = r["thesis_notes"] or r["failure_details"] or r["exit_reason"] or "Standard rule exit"
 
-                sc = scorecards[agent_name]
-                sc.total_evaluations += 1
-                sig = att.signal.upper()
+                results.append({
+                    "symbol": r["symbol"],
+                    "market": r["market"],
+                    "strategy": r["strategy"],
+                    "direction": r["direction"],
+                    "entry_price": r["entry_price"],
+                    "exit_price": r["exit_price"],
+                    "realized_pnl": r["realized_pnl"],
+                    "return_pct": r["return_pct"],
+                    "holding_period_seconds": r["holding_period_seconds"] or 0.0,
+                    "pm_driver": pm_driver,
+                    "learning_note": learning_note,
+                    "exit_reason": r["exit_reason"],
+                })
+            return results
 
-                if sig == "BUY":
-                    sc.bullish_calls += 1
-                    sc.avg_return_when_bullish += ret
-                elif sig == "SELL":
-                    sc.bearish_calls += 1
-                    sc.avg_return_when_bearish += ret
-                else:
-                    sc.neutral_calls += 1
+    def get_aggregate_scorecard(self, days: Optional[int] = None) -> dict[str, Any]:
+        """
+        Aggregate lifetime and trailing performance directly via SQL aggregations
+        across all closed journal entries.
+        """
+        query = """
+            SELECT
+                symbol, market, direction, realized_pnl, return_pct, holding_period_seconds
+            FROM decision_journal
+            WHERE status = 'CLOSED' AND realized_pnl IS NOT NULL
+        """
+        params: list[Any] = []
+        if days:
+            query += " AND datetime(exit_timestamp) >= datetime('now', ?)"
+            params.append(f"-{days} days")
 
-                if att.directional_accuracy == 1.0:
-                    sc.correct_calls += 1
-                elif att.directional_accuracy == 0.0:
-                    sc.incorrect_calls += 1
+        query += " ORDER BY exit_timestamp ASC"
 
-                sc.avg_confidence += att.confidence
-                sc.brier_calibration_score += att.brier_score_loss
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
 
-                # PnL attribution
-                if (sig == "BUY" and ev.direction == "BUY") or (sig == "SELL" and ev.direction == "SELL"):
-                    sc.total_pnl_attributed += pnl
+        if not rows:
+            return {
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate_pct": 0.0,
+                "profit_factor": 0.0,
+                "cumulative_pnl_inr": 0.0,
+                "cumulative_pnl_usd": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "win_loss_ratio": 0.0,
+                "max_consecutive_losses": 0,
+            }
 
-        # Normalize averages
-        for agent_name, sc in scorecards.items():
-            n = sc.total_evaluations
-            if n > 0:
-                sc.accuracy_rate = round(sc.correct_calls / n, 4)
-                sc.avg_confidence = round(sc.avg_confidence / n, 4)
-                sc.brier_calibration_score = round(sc.brier_calibration_score / n, 4)
-                sc.total_pnl_attributed = round(sc.total_pnl_attributed, 2)
-            
-            decisive = sc.correct_calls + sc.incorrect_calls
-            if decisive > 0:
-                sc.win_rate = round(sc.correct_calls / decisive, 4)
+        total_trades = len(rows)
+        wins = [r for r in rows if (r["realized_pnl"] or 0) > 0]
+        losses = [r for r in rows if (r["realized_pnl"] or 0) < 0]
 
-            if sc.bullish_calls > 0:
-                sc.avg_return_when_bullish = round(sc.avg_return_when_bullish / sc.bullish_calls, 2)
-            if sc.bearish_calls > 0:
-                sc.avg_return_when_bearish = round(sc.avg_return_when_bearish / sc.bearish_calls, 2)
+        winning_trades = len(wins)
+        losing_trades = len(losses)
+        win_rate_pct = round((winning_trades / total_trades) * 100, 1) if total_trades > 0 else 0.0
 
-        return scorecards
+        gross_profit = sum((r["realized_pnl"] or 0) for r in wins)
+        gross_loss = sum(abs(r["realized_pnl"] or 0) for r in losses)
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 1.0)
+
+        pnl_inr = sum((r["realized_pnl"] or 0) for r in rows if str(r["market"]).lower() == "india")
+        pnl_usd = sum((r["realized_pnl"] or 0) for r in rows if str(r["market"]).lower() == "us")
+
+        avg_win = round(gross_profit / winning_trades, 2) if winning_trades > 0 else 0.0
+        avg_loss = round(gross_loss / losing_trades, 2) if losing_trades > 0 else 0.0
+        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else (round(avg_win, 2) if avg_win > 0 else 1.0)
+
+        # Max consecutive losses
+        max_consec_losses = 0
+        current_streak = 0
+        for r in rows:
+            if (r["realized_pnl"] or 0) < 0:
+                current_streak += 1
+                if current_streak > max_consec_losses:
+                    max_consec_losses = current_streak
+            else:
+                current_streak = 0
+
+        return {
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate_pct": win_rate_pct,
+            "profit_factor": profit_factor,
+            "cumulative_pnl_inr": round(pnl_inr, 2),
+            "cumulative_pnl_usd": round(pnl_usd, 2),
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "win_loss_ratio": win_loss_ratio,
+            "max_consecutive_losses": max_consec_losses,
+        }
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

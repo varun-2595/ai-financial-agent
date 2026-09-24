@@ -60,14 +60,46 @@ class TelegramNotifier:
 
 # ── Interactive Command Center (Async) ─────────────────────────────────────────
 
+def _get_allowed_user_ids() -> set[str]:
+    allowed = set()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if chat_id:
+        allowed.add(str(chat_id).strip())
+    allowed_env = os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
+    for uid in allowed_env.split(","):
+        if uid.strip():
+            allowed.add(str(uid).strip())
+    return allowed
+
+
 def _is_authorized(update: Update) -> bool:
-    """Strict security check: only authorized TELEGRAM_CHAT_ID can execute commands."""
-    if not update.effective_chat:
-        return False
-    authorized = os.getenv("TELEGRAM_CHAT_ID")
-    if not authorized:
+    """Strict security check: only authorized TELEGRAM_CHAT_ID or TELEGRAM_ALLOWED_USER_IDS can execute commands."""
+    allowed = _get_allowed_user_ids()
+    if not allowed:
         return True
-    return str(update.effective_chat.id).strip() == str(authorized).strip()
+
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+
+    if (user_id and user_id in allowed) or (chat_id and chat_id in allowed):
+        return True
+
+    logger.warning(f"[Security Audit] Unauthorized Telegram access attempt: user_id={user_id}, chat_id={chat_id}")
+    return False
+
+
+def authorized_admin(func):
+    """Decorator guarding command endpoints against unauthorized Telegram triggers."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not _is_authorized(update):
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "⛔ <b>Access Denied</b>: Your Telegram account is not authorized for Aegis command execution.",
+                    parse_mode="HTML",
+                )
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -403,59 +435,91 @@ async def cmd_exclude(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"⚠️ <b>{ticker}</b> was not found in the active watchlist.", parse_mode="HTML")
 
 
+@authorized_admin
 async def cmd_journal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """View recent immutable decision journal entries."""
-    if not _is_authorized(update):
-        return
-
+    """View recent immutable decision journal entries and post-trade learnings."""
     try:
         from src.journal.journal_store import DecisionJournalStore
         store = DecisionJournalStore()
-        entries = store.get_recent_decisions(limit=5)
+        closed_trades = store.get_recent_closed_trades(limit=5)
 
-        if not entries:
-            await update.message.reply_text("📭 No decision journal entries recorded yet.", parse_mode="HTML")
+        if not closed_trades:
+            # Fallback to recent proposed/open decisions if no closed trades yet
+            recent_decisions = store.get_recent_decisions(limit=5)
+            if not recent_decisions:
+                await update.message.reply_text("📭 <b>No decision journal entries recorded yet.</b>", parse_mode="HTML")
+                return
+
+            lines = ["🏛️ <b>RECENT DECISION JOURNAL (PENDING / OPEN)</b>\n──────────────────────────────"]
+            for e in recent_decisions:
+                ts = e.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(e.timestamp, "strftime") else str(e.timestamp)[:16].replace("T", " ")
+                lines.append(
+                    f"• <b>{e.symbol}</b> [{e.market.upper()} · {e.strategy.upper()}] — <b>{e.direction}</b>\n"
+                    f"  Status: <code>{e.status}</code> | Conviction: <code>{e.confidence:.2f}</code>\n"
+                    f"  Thesis: <i>{html.escape(e.final_thesis[:100])}...</i>\n"
+                    f"  Time: <code>{ts} UTC</code>\n"
+                )
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
 
-        lines = ["🏛️ <b>RECENT DECISION JOURNAL ENTRIES</b>\n──────────────────────────────"]
-        for e in entries:
-            ts = e.timestamp[:16].replace("T", " ")
+        lines = ["🏛️ <b>RECENT TRADE DECISION JOURNAL & POST-MORTEMS</b>\n──────────────────────────────"]
+        for t in closed_trades:
+            curr_sym = "₹" if str(t["market"]).lower() == "india" else "$"
+            sec = t.get("holding_period_seconds", 0) or 0
+            if sec < 3600:
+                duration_str = f"{int(sec // 60)}m"
+            else:
+                duration_str = f"{sec / 3600:.1f}h"
+
+            pnl_val = t.get("realized_pnl", 0.0) or 0.0
+            ret_val = t.get("return_pct", 0.0) or 0.0
+            pnl_emoji = "🟢" if pnl_val >= 0 else "🔴"
+
             lines.append(
-                f"• <b>{e.symbol}</b> [{e.market.upper()} · {e.strategy}] — <b>{e.direction}</b>\n"
-                f"  Conviction: <code>{e.confidence:.2f}</code> | Risk Decision: <b>{e.risk_decision}</b>\n"
-                f"  Thesis: <i>{html.escape(e.final_thesis[:90])}...</i>\n"
-                f"  Time: <code>{ts} UTC</code>\n"
+                f"{pnl_emoji} <b>{t['symbol']}</b> | <b>{t['direction']}</b> ({t['strategy'].upper()})\n"
+                f"  <b>Outcome:</b> <code>{'+' if pnl_val >= 0 else ''}{curr_sym}{pnl_val:,.2f} ({ret_val:+.2f}%)</code> | Duration: <code>{duration_str}</code>\n"
+                f"  <b>Consensus Driver:</b> <i>{html.escape(t['pm_driver'][:110])}</i>\n"
+                f"  <b>Learning Note:</b> <i>{html.escape(t['learning_note'][:110])}</i>\n"
             )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
     except Exception as exc:
+        logger.error(f"[Telegram] Error in cmd_journal: {exc}")
         await update.message.reply_text(f"❌ Could not load decision journal: {html.escape(str(exc))}", parse_mode="HTML")
 
 
+@authorized_admin
 async def cmd_scorecard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """View multi-agent calibration and directional accuracy scorecards."""
-    if not _is_authorized(update):
-        return
-
+    """View aggregated lifetime and 30-day performance scorecards."""
     try:
         from src.journal.journal_store import DecisionJournalStore
         store = DecisionJournalStore()
-        scorecards = store.get_agent_scorecards()
+        sc = store.get_aggregate_scorecard(days=None)
+        sc_30 = store.get_aggregate_scorecard(days=30)
 
-        if not scorecards:
-            await update.message.reply_text("📭 No agent scorecards computed yet (minimum closed trades required).", parse_mode="HTML")
+        if sc["total_trades"] == 0:
+            await update.message.reply_text("📭 <b>No closed trades recorded yet.</b> Scorecards will populate after initial trade executions.", parse_mode="HTML")
             return
 
-        lines = ["📊 <b>MULTI-AGENT CALIBRATION SCORECARDS</b>\n──────────────────────────────"]
-        for sc in scorecards:
-            lines.append(
-                f"🤖 <b>{sc.agent_name}</b>\n"
-                f"   • Directional Accuracy: <b>{sc.directional_accuracy_pct:.1f}%</b> ({sc.correct_direction_count}/{sc.total_evaluations})\n"
-                f"   • Thesis Accuracy: <b>{sc.thesis_accuracy_pct:.1f}%</b>\n"
-                f"   • Avg Conviction: <code>{sc.average_conviction:.2f}</code> | Brier Score: <code>{sc.brier_score:.3f}</code>\n"
-            )
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        text_out = (
+            "📊 <b>AEGIS SYSTEM PERFORMANCE SCORECARD</b>\n"
+            "──────────────────────────────\n"
+            "<b>📈 Lifetime Aggregates:</b>\n"
+            f"• <b>Closed Trades:</b> <code>{sc['total_trades']}</code> (Wins: <code>{sc['winning_trades']}</code> | Losses: <code>{sc['losing_trades']}</code>)\n"
+            f"• <b>Win Rate:</b> <b>{sc['win_rate_pct']:.1f}%</b>\n"
+            f"• <b>Profit Factor:</b> <b>{sc['profit_factor']:.2f}</b>\n"
+            f"• <b>Cumulative INR P&L:</b> <b>{'+' if sc['cumulative_pnl_inr'] >= 0 else ''}₹{sc['cumulative_pnl_inr']:,.2f}</b>\n"
+            f"• <b>Cumulative USD P&L:</b> <b>{'+' if sc['cumulative_pnl_usd'] >= 0 else ''}${sc['cumulative_pnl_usd']:,.2f}</b>\n"
+            f"• <b>Win / Loss Ratio:</b> <code>{sc['win_loss_ratio']:.2f}</code> (Avg Win: <code>{sc['avg_win']:,.2f}</code> / Avg Loss: <code>{sc['avg_loss']:,.2f}</code>)\n"
+            f"• <b>Max Consecutive Losses:</b> <code>{sc['max_consecutive_losses']}</code>\n"
+            "──────────────────────────────\n"
+            "<b>⏱️ Trailing 30-Day Window:</b>\n"
+            f"• <b>Trades:</b> <code>{sc_30['total_trades']}</code> | <b>Win Rate:</b> <b>{sc_30['win_rate_pct']:.1f}%</b> | <b>Profit Factor:</b> <b>{sc_30['profit_factor']:.2f}</b>\n"
+            f"• <b>30D Realized P&L:</b> <code>₹{sc_30['cumulative_pnl_inr']:,.2f}</code> | <code>${sc_30['cumulative_pnl_usd']:,.2f}</code>\n"
+        )
+        await update.message.reply_text(text_out, parse_mode="HTML")
     except Exception as exc:
-        await update.message.reply_text(f"❌ Could not load scorecards: {html.escape(str(exc))}", parse_mode="HTML")
+        logger.error(f"[Telegram] Error in cmd_scorecard: {exc}")
+        await update.message.reply_text(f"❌ Could not load scorecard: {html.escape(str(exc))}", parse_mode="HTML")
 
 
 async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

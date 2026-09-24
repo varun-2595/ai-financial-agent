@@ -1,11 +1,32 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aegis_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader_pass
+      POSTGRES_DB: trading_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trading_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   aegis-agent:
     build: .
     container_name: aegis_financial_agent
     restart: unless-stopped
     network_mode: "host"
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     volumes:
@@ -18,4 +39,8 @@ services:
       - ./tests:/app/tests
     environment:
       - TZ=Asia/Kolkata
+      - DATABASE_URL=postgresql+asyncpg://trader:trader_pass@localhost:5432/trading_agent
     command: python main.py
+
+volumes:
+  pgdata:

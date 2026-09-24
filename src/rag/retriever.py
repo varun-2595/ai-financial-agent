@@ -88,7 +88,7 @@ class FinancialRAGRetriever:
             context_parts.append(
                 f"--- EVIDENCE CHUNK ({citation.format_inline()}) ---\n"
                 f"Section: {meta.section} | Page: {meta.page_number or 'N/A'}\n"
-                f"{chunk.text}\n"
+                f"<untrusted_filing>\n{chunk.text}\n</untrusted_filing>\n"
             )
 
         context_text = "\n".join(context_parts)

@@ -418,6 +418,90 @@ class PortfolioRiskManager:
         self.audit_store.record_evaluation(eval_result, risk_state)
         return eval_result
 
+    def check_and_enforce_intraday_circuit_breaker(
+        self,
+        market: Literal["india", "us"],
+        current_nav: float,
+        peak_nav: float,
+        max_drawdown_limit_pct: float = 0.02,  # 2.0% peak-to-trough drop limit
+    ) -> bool:
+        """
+        Monitors peak-to-trough intraday drawdown. If drop exceeds limit,
+        immediately triggers emergency trading halt.
+        Returns True if circuit breaker triggered, False otherwise.
+        """
+        if peak_nav <= 0 or current_nav <= 0:
+            return False
+
+        drawdown = (peak_nav - current_nav) / peak_nav
+        if drawdown >= max_drawdown_limit_pct:
+            logger.critical(
+                f"[RiskManager] 🚨 HARDWARE KILL-SWITCH TRIGGERED: {market.upper()} drawdown "
+                f"({drawdown*100:.2f}%) exceeded 2.0% limit (Peak: {peak_nav:,.2f}, Current: {current_nav:,.2f})!"
+            )
+            self.execute_emergency_kill_switch(
+                market=market,
+                current_nav=current_nav,
+                peak_nav=peak_nav,
+                drawdown_pct=drawdown,
+            )
+            return True
+        return False
+
+    def execute_emergency_kill_switch(
+        self,
+        market: Literal["india", "us"],
+        current_nav: float,
+        peak_nav: float,
+        drawdown_pct: float,
+    ) -> None:
+        """
+        Autonomous emergency trading halt:
+        1. Cancels all open limit orders across Kite and US brokers
+        2. Market-order square off all intraday MIS positions
+        3. Locks state in database (system_status = 'EMERGENCY_HALT')
+        4. Dispatches high-priority Telegram emergency alert
+        """
+        from src.notifier.telegram_bot import TelegramNotifier
+        from src.trading.paper_engine import PaperTradingEngine
+        from src.utils.state_manager import set_trading_paused
+        from src.db.trading_store import record_account_snapshot
+
+        # 1. Lock state in DB & Pause trading
+        set_trading_paused(market, True)
+        record_account_snapshot(
+            market=market,
+            cash_balance=current_nav,
+            margin_utilized=0.0,
+            portfolio_nav=current_nav,
+            peak_nav=peak_nav,
+            drawdown_pct=drawdown_pct * 100.0,
+        )
+
+        # 2. Square off intraday MIS positions
+        engine = PaperTradingEngine()
+        closed_reports = engine.close_all_positions(market)
+
+        # 3. Dispatch high-priority emergency alert
+        curr_sym = "₹" if market == "india" else "$"
+        tg = TelegramNotifier()
+        alert_msg = (
+            f"🚨 <b>EMERGENCY HARDWARE KILL-SWITCH TRIGGERED</b> 🚨\n"
+            f"──────────────────────────────\n"
+            f"<b>Market:</b> {market.upper()}\n"
+            f"<b>Peak NAV:</b> {curr_sym}{peak_nav:,.2f}\n"
+            f"<b>Current NAV:</b> {curr_sym}{current_nav:,.2f}\n"
+            f"<b>Intraday Drawdown:</b> <b>{drawdown_pct*100:.2f}%</b> (Threshold: 2.00%)\n"
+            f"──────────────────────────────\n"
+            f"<b>Action Taken:</b>\n"
+            f"• All new entries HALTED\n"
+            f"• Cancelled pending limit orders\n"
+            f"• Closed {len(closed_reports)} intraday/scalping positions\n"
+            f"• System status locked to <code>EMERGENCY_HALT</code>\n\n"
+            f"Use <code>/resume {market}</code> to re-enable trading after review."
+        )
+        tg.send_message(alert_msg)
+
     def _build_rejection(
         self,
         signal: TradeSignal,

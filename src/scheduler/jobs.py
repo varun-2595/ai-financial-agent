@@ -81,6 +81,31 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
         logger.info(f"[Job] {market.upper()} new entries PAUSED by user. Evaluated open positions only.")
         return
 
+    # Check Hardware Kill-Switch & Intraday Drawdown Circuit Breaker
+    from src.risk.portfolio_risk_manager import PortfolioRiskManager
+    from src.db.trading_store import record_account_snapshot
+
+    portfolio = engine.get_portfolio_summary(market)
+    cash = portfolio["cash"]
+    port_val = portfolio["total_value"]
+    peak_nav = max(port_val, portfolio.get("initial_cash", port_val))
+
+    risk_mgr = PortfolioRiskManager()
+    if risk_mgr.check_and_enforce_intraday_circuit_breaker(market, current_nav=port_val, peak_nav=peak_nav):
+        logger.critical(f"[Job] 🛑 {market.upper()} Intraday Drawdown Circuit Breaker active. Halting execution cycle.")
+        return
+
+    # Record account snapshot for observability
+    drawdown_pct = round(((peak_nav - port_val) / peak_nav) * 100, 2) if peak_nav > 0 else 0.0
+    record_account_snapshot(
+        market=market,
+        cash_balance=cash,
+        margin_utilized=portfolio.get("reserved_margin", 0.0),
+        portfolio_nav=port_val,
+        peak_nav=peak_nav,
+        drawdown_pct=drawdown_pct,
+    )
+
     # Check daily profit target lock & max daily loss guardrail
     daily_pnl = engine.get_daily_realized_pnl(market)
     cfg_paper = engine.config.paper_trading
@@ -97,9 +122,6 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
         return
 
     # 3. Scan for new trading signals
-    portfolio = engine.get_portfolio_summary(market)
-    cash = portfolio["cash"]
-    port_val = portfolio["total_value"]
 
     for t_info in tickers_info:
         ticker = t_info["ticker"]

@@ -51,14 +51,19 @@ Agent Intelligence Reports:
 2. FundamentalAgent:  {fund_str}
 3. NewsAgent:         {news_str}
 4. MacroAgent:        {macro_str}
-5. RiskAgent:         {risk_str}
+5. RiskAgent (Bear Red-Team): {risk_str}
 
 Detailed Reasoning Highlights:
 - Technical: {', '.join(consensus.technical.reasons[:2]) if consensus.technical else 'None'}
 - Fundamental: {', '.join(consensus.fundamental.reasons[:2]) if consensus.fundamental else 'None'}
 - News: {', '.join(consensus.news.reasons[:1]) if consensus.news else 'None'}
 - Macro: {', '.join(consensus.macro.reasons[:1]) if consensus.macro else 'None'}
-- Risk: {', '.join(consensus.risk.reasons[:1]) if consensus.risk else 'None'}
+- Risk / Bear Case: {', '.join(consensus.risk.reasons[:2]) if consensus.risk else 'None'} (Risks: {', '.join(consensus.risk.risks[:2]) if consensus.risk else 'None'})
+
+ADVERSARIAL RED-TEAMING MANDATE:
+1. Conduct an adversarial Bull vs Bear debate between upside catalysts and RiskAgent downside objections.
+2. If issuing a BUY, you MUST explicitly invalidate or containment-bound the Bear/Risk objections with technical or fundamental data.
+3. If Bear/Risk risks are NOT convincingly refuted, downgrade signal to HOLD or SELL.
 
 Synthesize these perspectives and provide your final coordinated PortfolioManagerAgent recommendation.
 """
@@ -74,7 +79,7 @@ Synthesize these perspectives and provide your final coordinated PortfolioManage
         snapshot: StockSnapshot,
         consensus: MultiAgentConsensus,
     ) -> AgentSignalOutput:
-        """Deterministic consensus aggregation across all agent signals."""
+        """Deterministic consensus aggregation with adversarial Bear/Risk veto checks."""
         weights = {
             "technical": 0.30,
             "fundamental": 0.25,
@@ -116,15 +121,24 @@ Synthesize these perspectives and provide your final coordinated PortfolioManage
             all_risks.extend(agent_out.risks[:1])
             all_evidence.extend(agent_out.evidence[:1])
 
-        if buy_weight >= 0.45 and buy_weight > sell_weight * 1.5:
+        # Adversarial Red-Team Check: RiskAgent veto/downside check
+        risk_veto = False
+        if consensus.risk and consensus.risk.signal == "SELL" and consensus.risk.confidence >= 0.65:
+            risk_veto = True
+
+        if buy_weight >= 0.45 and buy_weight > sell_weight * 1.5 and not risk_veto:
             final_signal = "BUY"
             final_conf = min(0.95, round(buy_weight + 0.20, 2))
-        elif sell_weight >= 0.40:
+            all_reasons.append("Adversarial check: Bull thesis invalidates downside objections")
+        elif sell_weight >= 0.40 or risk_veto:
             final_signal = "SELL"
-            final_conf = min(0.90, round(sell_weight + 0.20, 2))
+            final_conf = min(0.90, round(sell_weight + 0.20, 2)) if not risk_veto else 0.75
+            if risk_veto:
+                all_risks.append("Adversarial Red-Team veto: RiskAgent identified unacceptable downside tail risk")
         else:
             final_signal = "HOLD"
             final_conf = 0.60
+            all_reasons.append("Equilibrium between Bull catalysts and Bear risk considerations")
 
         return AgentSignalOutput(
             agent=self.name,

@@ -26,9 +26,13 @@ exchange-calendars>=4.5.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
 SQLAlchemy>=2.0.30
+asyncpg>=0.29.0
+aiosqlite>=0.20.0
+psycopg2-binary>=2.9.9
 
-# ── Trading (Phase 6 — Zerodha Kite) ─────────────────────────────────────────
-# kiteconnect>=5.0.1          # Uncomment in Phase 6
+# ── Trading & Broker Authentication ──────────────────────────────────────────
+pyotp>=2.9.0
+# kiteconnect>=5.0.1          # Uncomment for live Zerodha execution
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest>=8.2.0

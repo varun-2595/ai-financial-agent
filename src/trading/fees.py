@@ -1,58 +1,50 @@
 """
-Fee Schedule — simulates realistic brokerage, exchange, and regulatory fees.
+Statutory Fee Engine — accurately models Indian and US stock exchange regulatory friction,
+brokerage, taxes, and adverse execution slippage.
 
-Paper trading default: flat 0.05 % per side (approximates discount broker + exchange charges).
-NSE real fees breakdown (for future live trading reference):
-    - STT (Securities Transaction Tax): 0.1 % on sell side only (equity delivery)
-    - SEBI turnover fee: 0.0001 %
-    - NSE exchange transaction charges: 0.00335 %
-    - IPFT: 0.0001 %
-    - Stamp duty: 0.015 % on buy side only
-    - GST 18 % on (brokerage + exchange charges)
+Indian Market Statutory Friction:
+    - Securities Transaction Tax (STT):
+        • Equity Delivery (CNC): 0.10% (0.001) on both BUY and SELL sides.
+        • Equity Intraday (MIS/Scalp): 0.025% (0.00025) on SELL side only (0% on BUY).
+    - Exchange Turnover Charges: 0.00297% (0.0000297) on NSE.
+    - SEBI Charges: ₹10 per crore (0.0000010 = 0.0001%).
+    - Stamp Duty: 0.015% (0.00015) on BUY orders only.
+    - GST: 18% levied on (Brokerage + Exchange Turnover Charges + SEBI Charges).
 
-US real fees breakdown (for future live trading reference):
-    - SEC fee: $0.0000278 per $ of sell-side notional
-    - FINRA TAF: $0.000145 per share sold (capped at $7.27 per trade)
-    - Exchange fees: ~$0.0030 per share (varies)
+US Market Statutory Friction:
+    - SEC Fee: $0.0000278 per $ of sell notional.
+    - FINRA TAF: $0.000166 per share sold (capped at $8.30 per trade).
+    - Clearing / Pass-through fee: $0.0005 per share.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
+from typing import Literal, Optional
 
 
 @dataclass
 class FeeSchedule:
-    """
-    Configurable fee rates for paper and live trading.
+    """Configurable statutory and regulatory fee schedule."""
 
-    All rates are expressed as a decimal fraction of notional value unless
-    otherwise noted (e.g. per_share_usd).
-
-    For paper trading only `paper_per_side_pct` is used. Live rates are
-    broken out individually to support accurate real-money cost accounting.
-    """
-
-    # ── Paper trading (simplified flat rate) ──────────────────────────────
-    paper_per_side_pct: float = 0.0005   # 0.05 % per side (entry AND exit)
+    # ── Paper Trading Flat Rate ──────────────────────────────────────────
+    paper_per_side_pct: float = 0.0005   # 0.05% flat per side for simplified paper accounting
 
     # ── Slippage ──────────────────────────────────────────────────────────
-    slippage_pct: float = 0.0005         # 0.05 % applied to fill price on top of fees
+    slippage_pct: float = 0.0005         # 0.05% adverse slippage on fill prices
 
-    # ── India / NSE real-money rates (for reference; not used in paper) ──
-    india_stt_sell_pct: float = 0.001    # 0.10 % on sell notional
-    india_exchange_pct: float = 0.0000335
-    india_sebi_pct: float = 0.000001
-    india_stamp_buy_pct: float = 0.00015 # 0.015 % on buy notional
-    india_gst_rate: float = 0.18         # 18 % on (brokerage + exchange)
+    # ── India / NSE Statutory Rates ──────────────────────────────────────
+    india_stt_delivery_pct: float = 0.0010    # 0.10% on Delivery (both Buy and Sell)
+    india_stt_intraday_sell_pct: float = 0.00025 # 0.025% on Intraday MIS (Sell side only)
+    india_exchange_turnover_pct: float = 0.0000297 # 0.00297% on NSE
+    india_sebi_turnover_pct: float = 0.0000010     # ₹10 per crore (0.0001%)
+    india_stamp_duty_buy_pct: float = 0.00015      # 0.015% on Buy orders only
+    india_gst_rate: float = 0.18                   # 18% on (Brokerage + Exchange + SEBI)
 
-    # ── US / NYSE-NASDAQ real-money rates ─────────────────────────────────
-    us_sec_sell_pct: float = 0.0000278   # SEC fee on sell notional
-    us_finra_per_share: float = 0.000145 # FINRA TAF per share sold
-    us_finra_cap: float = 7.27           # FINRA TAF cap per transaction
-
-
-    # ── Public API ────────────────────────────────────────────────────────
+    # ── US Statutory & Regulatory Rates ──────────────────────────────────
+    us_sec_sell_pct: float = 0.0000278             # SEC fee on sell notional
+    us_finra_per_share: float = 0.000166           # FINRA TAF per share sold
+    us_finra_cap: float = 8.30                     # FINRA TAF cap per trade
+    us_clearing_per_share: float = 0.0005          # Clearing pass-through fee
 
     def compute_fees(
         self,
@@ -61,14 +53,10 @@ class FeeSchedule:
         filled_price: float,
         quantity: int,
         is_paper: bool = True,
+        strategy: Optional[str] = None,
     ) -> float:
         """
-        Return total fees in local currency for a single fill.
-
-        For paper trading this is simply:
-            notional × paper_per_side_pct
-
-        This is charged on BOTH entry (BUY) and exit (SELL).
+        Calculates exact statutory and regulatory transaction friction.
         """
         notional = filled_price * quantity
         if notional <= 0 or quantity <= 0:
@@ -77,26 +65,35 @@ class FeeSchedule:
         if is_paper:
             return round(notional * self.paper_per_side_pct, 4)
 
-        # ── Live India fees (for future use) ──────────────────────────────
+        # ── Real / Live Indian Fee Calculation ────────────────────────────
         if market == "india":
-            brokerage = 0.0         # most discount brokers: flat ₹20/trade or 0
-            exchange = notional * self.india_exchange_pct
-            sebi = notional * self.india_sebi_pct
-            gst = (brokerage + exchange) * self.india_gst_rate
+            brokerage = min(20.0, notional * 0.0003)  # standard discount broker ₹20 cap
+            exchange_turnover = notional * self.india_exchange_turnover_pct
+            sebi_charges = notional * self.india_sebi_turnover_pct
+            gst = (brokerage + exchange_turnover + sebi_charges) * self.india_gst_rate
 
-            if direction == "BUY":
-                stamp = notional * self.india_stamp_buy_pct
-                return round(brokerage + exchange + sebi + gst + stamp, 4)
-            else:  # SELL
-                stt = notional * self.india_stt_sell_pct
-                return round(brokerage + exchange + sebi + gst + stt, 4)
+            is_intraday = strategy in ("scalping", "intraday") if strategy else False
 
-        # ── Live US fees (for future use) ─────────────────────────────────
+            if is_intraday:
+                stt = (notional * self.india_stt_intraday_sell_pct) if direction == "SELL" else 0.0
+            else:
+                stt = notional * self.india_stt_delivery_pct
+
+            stamp_duty = (notional * self.india_stamp_duty_buy_pct) if direction == "BUY" else 0.0
+
+            total = brokerage + exchange_turnover + sebi_charges + gst + stt + stamp_duty
+            return round(total, 4)
+
+        # ── Real / Live US Fee Calculation ────────────────────────────────
+        clearing = quantity * self.us_clearing_per_share
         if direction == "SELL":
-            sec = notional * self.us_sec_sell_pct
-            finra = min(quantity * self.us_finra_per_share, self.us_finra_cap)
-            return round(sec + finra, 4)
-        return 0.0   # US buy side: no regulatory fees (exchange fees billed by broker)
+            sec_fee = notional * self.us_sec_sell_pct
+            finra_taf = min(quantity * self.us_finra_per_share, self.us_finra_cap)
+            total = sec_fee + finra_taf + clearing
+        else:
+            total = clearing
+
+        return round(total, 4)
 
     def apply_slippage(
         self,
@@ -112,5 +109,4 @@ class FeeSchedule:
         return round(price * (1 - self.slippage_pct), 6)
 
 
-# ── Module-level default instance ─────────────────────────────────────────────
 DEFAULT_FEE_SCHEDULE = FeeSchedule()
