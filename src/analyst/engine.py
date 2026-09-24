@@ -1,17 +1,17 @@
 """
-LLM Analyst Engine utilizing the Google GenAI SDK.
-Produces validated StockAnalysis structured outputs with fallback handling.
+LLM Analyst Engine utilizing ModelRouter.
+Routes through Local M5 Node or Gemini remote provider with automated structured validation.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Optional
 
-from google import genai
-from google.genai import types
-
 from src.analyst.prompts import SYSTEM_PROMPT, build_analysis_prompt
 from src.data.models import StockAnalysis, StockSnapshot
+from src.gateway.gateway import ModelRequest, TaskComplexity
+from src.gateway.router import ModelRouter
 from src.technicals.indicators import compute_technical_indicators
 from src.technicals.levels import compute_support_resistance
 from src.utils.config import get_config
@@ -21,73 +21,65 @@ from src.utils.logger import logger
 class AnalystEngine:
     """
     Evaluates securities by synthesizing raw data, fundamentals, technical indicators,
-    and key price levels into institutional-grade structured research using Gemini.
+    and key price levels into institutional-grade structured research via ModelRouter.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+    def __init__(
+        self,
+        router: Optional[ModelRouter] = None,
+        api_key: Optional[str] = None,
+        force_heuristic: bool = False,
+    ):
         self.config = get_config()
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+        self.router = router or ModelRouter()
+        self.force_heuristic = force_heuristic
 
     def analyze_stock(self, snapshot: StockSnapshot) -> StockAnalysis:
         """
         Analyze a StockSnapshot and return a validated StockAnalysis object.
         """
-        if not self.client:
-            logger.warning("No GEMINI_API_KEY found; generating heuristic-based fallback analysis.")
+        if self.force_heuristic:
             return self._heuristic_fallback(snapshot)
 
         # 1. Compute technical indicators and key levels
         technicals = compute_technical_indicators(snapshot.history)
         levels = compute_support_resistance(snapshot.history)
 
+
         # 2. Build Prompt
         prompt = build_analysis_prompt(snapshot, technicals, levels)
 
-        model_name = self.config.llm.model
-        logger.info(f"[Analyst] Calling Gemini ({model_name}) for {snapshot.ticker}...")
+        req = ModelRequest(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=prompt,
+            response_schema=StockAnalysis,
+            task_complexity=TaskComplexity.COMPLEX,
+            temperature=self.config.llm.temperature,
+            timeout_seconds=45.0,
+        )
 
-        try:
-            response = self.client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=self.config.llm.temperature,
-                    response_mime_type="application/json",
-                    response_schema=StockAnalysis,
-                ),
-            )
+        resp = self.router.route(req)
 
-            # Parse response into StockAnalysis
-            analysis = StockAnalysis.model_validate_json(response.text)
-            logger.success(f"[Analyst] ✓ {snapshot.ticker}: {analysis.action} (Risk: {analysis.risk_level}, Confidence: {analysis.confidence_score:.2f})")
-            return analysis
-
-        except Exception as exc:
-            logger.error(f"[Analyst] Error analyzing {snapshot.ticker} with {model_name}: {exc}")
-            # Try fallback model if configured
-            fallback_model = self.config.llm.fallback_model
-            if fallback_model and fallback_model != model_name:
+        if resp.success:
+            if resp.structured_data and isinstance(resp.structured_data, StockAnalysis):
+                logger.success(
+                    f"[Analyst] ✓ {snapshot.ticker} ({resp.provider_used}): {resp.structured_data.action} "
+                    f"(Confidence: {resp.structured_data.confidence_score:.2f})"
+                )
+                return resp.structured_data
+            elif resp.content:
                 try:
-                    logger.info(f"[Analyst] Retrying with fallback model {fallback_model}...")
-                    response = self.client.models.generate_content(
-                        model=fallback_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            temperature=self.config.llm.temperature,
-                            response_mime_type="application/json",
-                            response_schema=StockAnalysis,
-                        ),
+                    analysis = StockAnalysis.model_validate_json(resp.content)
+                    logger.success(
+                        f"[Analyst] ✓ {snapshot.ticker} ({resp.provider_used}): {analysis.action} "
+                        f"(Confidence: {analysis.confidence_score:.2f})"
                     )
-                    analysis = StockAnalysis.model_validate_json(response.text)
-                    logger.success(f"[Analyst] ✓ {snapshot.ticker} (via fallback): {analysis.action}")
                     return analysis
-                except Exception as fallback_exc:
-                    logger.error(f"[Analyst] Fallback model also failed: {fallback_exc}")
+                except Exception as parse_err:
+                    logger.warning(f"[Analyst] JSON validation fallback for {snapshot.ticker}: {parse_err}")
 
-            return self._heuristic_fallback(snapshot, error=str(exc))
+        logger.warning(f"[Analyst] Model inference failed for {snapshot.ticker} ({resp.error}); applying heuristic fallback.")
+        return self._heuristic_fallback(snapshot, error=resp.error)
 
     def _heuristic_fallback(self, snapshot: StockSnapshot, error: Optional[str] = None) -> StockAnalysis:
         """Deterministic rule-based fallback if LLM is unavailable or unconfigured."""

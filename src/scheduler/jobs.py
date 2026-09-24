@@ -105,13 +105,11 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
                 portfolio_val=port_val,
             )
             if sig:
-                tg.send_message(format_trade_signal_telegram(sig))
-                # Execute order
+                # Execute order through portfolio risk gatekeeper
                 order = engine.execute_signal(sig)
                 if order:
                     tg.send_message(format_order_fill_telegram(order))
                     # Update local cash with the actual margin deducted (not full notional).
-                    # leverage = 3.0 for scalping/intraday, 1.0 for swing/positional.
                     is_margin_strat = strat in ("scalping", "intraday")
                     _leverage = engine.config.paper_trading.intraday_leverage_multiplier if is_margin_strat else 1.0
                     _margin = (order.filled_price * order.quantity) / _leverage
@@ -122,6 +120,7 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
                         is_paper=True,
                     )
                     cash -= round(_margin + _fees, 4)
+
 
 
 def job_intraday_square_off(market: Literal["india", "us"]) -> None:

@@ -30,6 +30,16 @@ class SignalGenerator:
         """
         Synthesizes technical conditions and LLM analysis to produce actionable TradeSignal.
         """
+        # Prevent duplicate entries if a position in this ticker is already open
+        try:
+            from src.db.trading_store import get_open_positions
+            open_pos = get_open_positions(market=snapshot.market)
+            if any(p["ticker"] == snapshot.ticker for p in open_pos):
+                logger.debug(f"[Signal] Position already active for {snapshot.ticker}; skipping duplicate.")
+                return None
+        except Exception:
+            pass
+
         # 1. Technical calculations
         tech = compute_technical_indicators(snapshot.history)
         levels = compute_support_resistance(snapshot.history)
@@ -41,6 +51,7 @@ class SignalGenerator:
         if analysis.action not in ("Must Buy", "Good Buy"):
             logger.info(f"[Signal] No buy signal for {snapshot.ticker} (action: {analysis.action})")
             return None
+
 
         current_p = snapshot.current_price
         direction: Literal["BUY", "SELL", "HOLD"] = "BUY"
