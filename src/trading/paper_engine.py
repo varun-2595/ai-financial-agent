@@ -62,15 +62,22 @@ from src.db.trading_store import (
     save_order,
     save_signal,
 )
+from src.risk.models import PortfolioRiskState, RiskDecision
+from src.risk.portfolio_risk_manager import PortfolioRiskManager
 from src.trading.fees import DEFAULT_FEE_SCHEDULE, FeeSchedule
 from src.utils.config import get_config
 from src.utils.logger import logger
 
 
 class PaperTradingEngine:
-    def __init__(self, fee_schedule: Optional[FeeSchedule] = None):
+    def __init__(
+        self,
+        fee_schedule: Optional[FeeSchedule] = None,
+        risk_manager: Optional[PortfolioRiskManager] = None,
+    ):
         self.config = get_config()
         self.fees = fee_schedule or DEFAULT_FEE_SCHEDULE
+        self.risk_manager = risk_manager or PortfolioRiskManager()
         init_trading_db()
         self._ensure_accounts()
 
@@ -231,6 +238,53 @@ class PaperTradingEngine:
             "initial_capital": initial,
         }
 
+    def get_portfolio_risk_state(self, market: Literal["india", "us"]) -> PortfolioRiskState:
+        """Construct live portfolio risk state snapshot for PortfolioRiskManager."""
+        nav_dict = self.get_portfolio_nav(market)
+        nav_val = float(nav_dict.get("nav", 1000.0))
+        cash = self.get_account_balance(market)
+        reserved_margin = self.get_reserved_margin(market)
+        open_pos = get_open_positions(market)
+        daily_stats = self.get_daily_stats(market)
+        initial_cash = float(daily_stats.get("initial_capital", nav_val))
+
+        gross_exposure = 0.0
+        sector_exposures: dict[str, float] = {}
+        sector_counts: dict[str, int] = {}
+
+        for p in open_pos:
+            qty = p.get("quantity", 0)
+            price = p.get("current_price") or p.get("avg_cost", 0.0)
+            val = qty * price
+            gross_exposure += val
+            sec = p.get("sector") or "General"
+            sector_exposures[sec] = sector_exposures.get(sec, 0.0) + val
+            sector_counts[sec] = sector_counts.get(sec, 0) + 1
+
+        peak_nav = max(initial_cash, nav_val)
+        drawdown_pct = max(0.0, (peak_nav - nav_val) / peak_nav) if peak_nav > 0 else 0.0
+        leverage = gross_exposure / nav_val if nav_val > 0 else 0.0
+
+        currency = "INR" if market == "india" else "USD"
+
+        return PortfolioRiskState(
+            market=market,
+            currency=currency,
+            nav=nav_val,
+            peak_nav=peak_nav,
+            cash=cash,
+            reserved_margin=reserved_margin,
+            gross_exposure=gross_exposure,
+            daily_realized_pnl=daily_stats.get("realized_pnl", 0.0),
+            daily_unrealized_pnl=daily_stats.get("unrealized_pnl", 0.0),
+            current_drawdown_pct=drawdown_pct,
+            current_leverage=leverage,
+            portfolio_beta=1.0,
+            sector_exposures=sector_exposures,
+            sector_position_counts=sector_counts,
+            open_positions=open_pos,
+        )
+
     # ── Internal cash helpers ──────────────────────────────────────────────────
 
     def _update_cash(
@@ -259,17 +313,28 @@ class PaperTradingEngine:
 
     def execute_signal(self, signal: TradeSignal) -> Optional[Order]:
         """
-        Execute a paper BUY order from a TradeSignal.
+        Execute a paper BUY order from a TradeSignal after deterministic Risk Engine gatekeeper.
 
-        Cash deducted = margin_blocked + entry_fees
-        margin_blocked = (filled_price × qty) / leverage
-        entry_fees     = fee_schedule.compute_fees(BUY, ...)
+        Order execution flow:
+        AI Proposal → Portfolio Manager → PortfolioRiskManager (APPROVE/REDUCE/REJECT) → Execution.
         """
         save_signal(signal)
 
         if signal.direction not in ("BUY", "SELL"):
             logger.warning(f"[Paper Engine] Skipping signal with direction={signal.direction}")
             return None
+
+        # ── Deterministic Portfolio-Level Risk Gate ─────────────────────────
+        risk_state = self.get_portfolio_risk_state(signal.market)
+        risk_eval = self.risk_manager.evaluate_trade(signal, risk_state)
+
+        if risk_eval.decision == RiskDecision.REJECT:
+            logger.warning(f"[Paper Engine] ❌ Trade REJECTED by Risk Engine: {risk_eval.reason}")
+            return None
+
+        if risk_eval.decision == RiskDecision.REDUCE:
+            logger.info(f"[Paper Engine] ⚠️ Trade REDUCED by Risk Engine: {risk_eval.reason}")
+            signal.quantity = risk_eval.approved_quantity
 
         # ── Slippage on fill price ─────────────────────────────────────────
         filled_price = self.fees.apply_slippage(signal.entry_price, signal.direction)
