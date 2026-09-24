@@ -13,21 +13,34 @@ from src.agents.prompts import FUNDAMENTAL_AGENT_PROMPT
 from src.data.models import StockSnapshot
 from src.gateway.gateway import TaskComplexity
 from src.gateway.router import ModelRouter
+from src.rag.citation import CitationVerifier
+from src.rag.retriever import FinancialRAGRetriever
 
 
 class FundamentalAgent(BaseAgent):
-    """Specialized agent for fundamental and financial valuation analysis."""
+    """Specialized agent for fundamental and financial valuation analysis with RAG grounding."""
 
-    def __init__(self, router: Optional[ModelRouter] = None):
+    def __init__(
+        self,
+        router: Optional[ModelRouter] = None,
+        retriever: Optional[FinancialRAGRetriever] = None,
+    ):
         super().__init__(
             name="FundamentalAgent",
             system_prompt=FUNDAMENTAL_AGENT_PROMPT,
             task_complexity=TaskComplexity.COMPLEX,
             router=router,
         )
+        self.retriever = retriever or FinancialRAGRetriever()
 
-    def analyze(self, snapshot: StockSnapshot) -> AgentSignalOutput:
-        """Evaluate fundamental ratios and financial health."""
+    def analyze(
+        self,
+        snapshot: StockSnapshot,
+        query_override: Optional[str] = None,
+    ) -> AgentSignalOutput:
+        """
+        Evaluate fundamental ratios and financial health grounded in corporate filings.
+        """
         f = snapshot.fundamentals
         sector = snapshot.sector or "General"
         pe_str = f"{f.pe_ratio:.2f}" if f.pe_ratio else "N/A"
@@ -36,6 +49,15 @@ class FundamentalAgent(BaseAgent):
         margin_str = f"{f.profit_margin * 100:.1f}%" if f.profit_margin else "N/A"
         de_str = f"{f.debt_to_equity:.2f}" if f.debt_to_equity else "N/A"
         mcap_str = f"{f.market_cap:,.0f}" if f.market_cap else "N/A"
+
+        # 1. Retrieve authoritative filing evidence
+        query_text = query_override or f"{snapshot.ticker} annual report 10-K quarterly financial results revenue margins debt roe"
+        retrieval = self.retriever.retrieve_evidence(
+            ticker=snapshot.ticker,
+            query_text=query_text,
+            market=snapshot.market,
+            top_k=3,
+        )
 
         prompt = f"""
 Asset: {snapshot.ticker} ({snapshot.market.upper()})
@@ -49,16 +71,51 @@ Financial Multiples & Metrics:
 - Profit Margin: {margin_str}
 - Debt-to-Equity: {de_str}
 
-Provide your structured FundamentalAgent evaluation.
+Authoritative Filing Evidence:
+{retrieval.context_text}
+
+MANDATORY EVIDENCE RULES:
+1. Every material fundamental claim MUST cite the provided evidence (e.g. [10-K, Item 7, 2024-10-31] or [NSE Quarterly Results, 2024-10-18]).
+2. If evidence is unavailable or insufficient in the filings above, explicitly state "Insufficient evidence."
+3. Do NOT fabricate or extrapolate unverified financial numbers.
 """
-        return self._query_gateway(
+        raw_output = self._query_gateway(
             user_prompt=prompt,
-            fallback_handler=self._heuristic_fallback,
+            fallback_handler=lambda s: self._heuristic_fallback(s, retrieval),
             snapshot=snapshot,
         )
 
+        # 2. Strict grounding & citation verification
+        grounded_reasons, grounded_risks, evidence_bullets = CitationVerifier.verify_and_ground_claims(
+            reasons=raw_output.reasons,
+            retrieval=retrieval,
+            agent_name=self.name,
+        )
 
-    def _heuristic_fallback(self, snapshot: StockSnapshot) -> AgentSignalOutput:
+        if not retrieval.has_sufficient_evidence:
+            return AgentSignalOutput(
+                agent=self.name,
+                signal="HOLD",
+                confidence=0.30,
+                reasons=grounded_reasons,
+                risks=grounded_risks,
+                evidence=["Insufficient evidence."],
+            )
+
+        return AgentSignalOutput(
+            agent=self.name,
+            signal=raw_output.signal,
+            confidence=raw_output.confidence,
+            reasons=grounded_reasons,
+            risks=grounded_risks,
+            evidence=evidence_bullets,
+        )
+
+    def _heuristic_fallback(
+        self,
+        snapshot: StockSnapshot,
+        retrieval: Optional[Any] = None,
+    ) -> AgentSignalOutput:
         """Deterministic rule-based fundamental analysis."""
         f = snapshot.fundamentals
         roe = f.return_on_equity or 0.12
@@ -84,17 +141,21 @@ Provide your structured FundamentalAgent evaluation.
             conf = 0.55
             reasons = ["Adequate fundamental profile; balanced risk-reward"]
 
+        evidence_list = [
+            f"P/E={pe:.1f}",
+            f"ROE={roe*100:.1f}%",
+            f"Debt/Equity={de:.2f}",
+            f"Margin={margin*100:.1f}%",
+        ]
+        if retrieval and retrieval.citations:
+            evidence_list.extend(CitationVerifier.format_citations(retrieval.citations))
+
         return AgentSignalOutput(
             agent=self.name,
             signal=signal,
             confidence=conf,
             reasons=reasons,
             risks=[f"Multiple compression risk if earnings growth decelerates"],
-            evidence=[
-                f"P/E={pe:.1f}",
-                f"ROE={roe*100:.1f}%",
-                f"Debt/Equity={de:.2f}",
-                f"Margin={margin*100:.1f}%",
-            ],
+            evidence=evidence_list,
         )
 

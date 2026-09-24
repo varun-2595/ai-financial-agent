@@ -107,51 +107,78 @@ class FinancialReasoning10BEngine:
         }
 
     def _reason_fundamental(self, text: str) -> dict[str, Any]:
+        if "Insufficient evidence: No corporate filings" in text:
+            return {
+                "agent": "FundamentalAgent",
+                "signal": "HOLD",
+                "confidence": 0.30,
+                "reasons": ["10B Neural Model: Insufficient filing evidence to establish valuation thesis."],
+                "risks": ["Missing financial statements and SEC/NSE disclosures"],
+                "evidence": ["Insufficient evidence."],
+            }
+
         pe = self._extract_number(r"P/E Ratio:\s*([0-9]+\.?[0-9]*)", text, 22.0)
         roe = self._extract_number(r"ROE.*:\s*([0-9]+\.?[0-9]*)", text, 15.0)
         de = self._extract_number(r"Debt-to-Equity:\s*([0-9]+\.?[0-9]*)", text, 0.8)
+
+        # Check for citation tag in text
+        citation_match = re.search(r"(\[.*?10-K.*?\]|\[.*?Quarterly.*?\]|\[.*?NSE.*?\]|\[.*?SEC.*?\])", text)
+        cite_str = f" {citation_match.group(1)}" if citation_match else ""
 
         if roe >= 15.0 and pe <= 35.0 and de <= 1.5:
             signal = "BUY"
             conf = 0.80
             reasons = [
-                f"10B Neural Model: High ROE ({roe:.1f}%) and disciplined capital structure (D/E: {de:.2f})",
+                f"10B Neural Model: High ROE ({roe:.1f}%) and disciplined capital structure (D/E: {de:.2f}){cite_str}",
                 f"Attractive valuation multiple of {pe:.1f}x P/E relative to growth profile",
             ]
         elif pe > 60.0 or de > 2.5:
             signal = "HOLD"
             conf = 0.70
-            reasons = [f"10B Neural Model: Valuation premium ({pe:.1f}x) or elevated leverage (D/E: {de:.2f})"]
+            reasons = [f"10B Neural Model: Valuation premium ({pe:.1f}x) or elevated leverage (D/E: {de:.2f}){cite_str}"]
         else:
             signal = "HOLD"
             conf = 0.58
-            reasons = ["10B Neural Model: Fundamentals inline with historical averages"]
+            reasons = [f"10B Neural Model: Fundamentals inline with historical disclosures{cite_str}"]
 
         return {
             "agent": "FundamentalAgent",
             "signal": signal,
             "confidence": conf,
             "reasons": reasons,
-            "risks": ["Earnings deceleration or multiple compression risk"],
+            "risks": ["Earnings deceleration or multiple compression risk per filing disclosures"],
             "evidence": [f"PE={pe:.1f}", f"ROE={roe:.1f}%", f"DE={de:.2f}", "Engine=Aegis-10B-Local"],
         }
 
     def _reason_news(self, text: str) -> dict[str, Any]:
+        if "No recent major news headlines" in text and "Insufficient evidence" in text:
+            return {
+                "agent": "NewsAgent",
+                "signal": "HOLD",
+                "confidence": 0.30,
+                "reasons": ["10B Neural Model: Insufficient news or disclosure flow."],
+                "risks": ["No recent catalyst visibility"],
+                "evidence": ["Insufficient evidence."],
+            }
+
         has_pos = any(w in text.lower() for w in ["beat", "profit", "growth", "expansion", "partnership", "upgrade"])
         has_neg = any(w in text.lower() for w in ["miss", "loss", "lawsuit", "investigation", "downgrade", "warning"])
+
+        citation_match = re.search(r"(\[.*?8-K.*?\]|\[.*?10-K.*?\]|\[.*?NSE.*?\])", text)
+        cite_str = f" {citation_match.group(1)}" if citation_match else ""
 
         if has_pos and not has_neg:
             signal = "BUY"
             conf = 0.74
-            reasons = ["10B Neural Model: Bullish headline catalysts and positive institutional sentiment"]
+            reasons = [f"10B Neural Model: Bullish headline catalysts and positive filing momentum{cite_str}"]
         elif has_neg:
             signal = "HOLD"
             conf = 0.68
-            reasons = ["10B Neural Model: Cautionary news headlines present"]
+            reasons = [f"10B Neural Model: Cautionary news headlines present{cite_str}"]
         else:
             signal = "HOLD"
             conf = 0.55
-            reasons = ["10B Neural Model: Neutral news cycle without high-impact catalysts"]
+            reasons = [f"10B Neural Model: Neutral news cycle without high-impact catalysts{cite_str}"]
 
         return {
             "agent": "NewsAgent",
