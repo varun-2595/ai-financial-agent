@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent  # src/utils/ -> src/ -> project_root
 CONFIG_DIR = ROOT / "config"
 
 
@@ -79,7 +79,9 @@ def get_config(reload: bool = False) -> AppConfig:
         with open(settings_path) as f:
             raw = yaml.safe_load(f) or {}
 
-    general_raw = raw.get("general", {})
+    # settings.yaml uses 'agent:' key; 'general:' kept for backward compat
+    general_raw = raw.get("general", raw.get("agent", {}))
+
     llm_raw = raw.get("llm", {})
     paper_raw = raw.get("paper_trading", {})
     adv_raw = raw.get("advisory", {})
