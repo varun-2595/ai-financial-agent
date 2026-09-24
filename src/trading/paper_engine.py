@@ -122,30 +122,63 @@ class PaperTradingEngine:
             f" | ${cfg.virtual_capital_usd:,.2f} USD"
         )
 
-    def full_reset(self) -> dict:
+    def full_reset(self, hard_wipe: bool = False) -> dict:
         """
-        Nuclear reset: archives all open positions as CANCELLED, resets cash.
-        Use via /reset Telegram command to start a clean session.
+        Reset paper engine:
+        If hard_wipe=True, deletes all rows from positions, orders, signals, ledger,
+        risk_audit_log, decision_journal, trade_evaluations, and trade_playbook.
+        If hard_wipe=False, archives open positions as CANCELLED.
+        Resets accounts to configured virtual capital (₹10,000 INR / $1,000 USD).
         """
         now = datetime.now(timezone.utc).isoformat()
+        cfg = self.config.paper_trading
         with _conn() as conn:
-            conn.execute("""
-                UPDATE positions SET status = 'CANCELLED', closed_at = ?, realized_pnl = 0.0
-                WHERE status = 'OPEN'
-            """, (now,))
-            cancelled = conn.execute("SELECT changes()").fetchone()[0]
+            if hard_wipe:
+                for tbl in [
+                    "positions", "orders", "signals", "ledger",
+                    "risk_audit_log", "decision_journal", "trade_evaluations", "trade_playbook"
+                ]:
+                    try:
+                        conn.execute(f"DELETE FROM {tbl}")
+                    except Exception:
+                        pass
+                cancelled = 0
+            else:
+                conn.execute("""
+                    UPDATE positions SET status = 'CANCELLED', closed_at = ?, realized_pnl = 0.0
+                    WHERE status = 'OPEN'
+                """, (now,))
+                cancelled = conn.execute("SELECT changes()").fetchone()[0]
+
+            # Re-seed accounts
+            for acc_id, currency, capital in [
+                ("paper_inr", "INR", cfg.virtual_capital_inr),
+                ("paper_usd", "USD", cfg.virtual_capital_usd),
+            ]:
+                conn.execute("""
+                    INSERT INTO accounts (account_id, currency, cash, initial_cash, reserved_margin, updated_at)
+                    VALUES (?, ?, ?, ?, 0.0, ?)
+                    ON CONFLICT(account_id) DO UPDATE SET
+                        cash            = excluded.cash,
+                        initial_cash    = excluded.initial_cash,
+                        reserved_margin = 0.0,
+                        updated_at      = excluded.updated_at
+                """, (acc_id, currency, capital, capital, now))
+                append_ledger(conn, acc_id, "RESET", capital, capital,
+                              description=f"Account reset from scratch to {capital} {currency}")
             conn.commit()
 
-        self.reset_account_balances()
         logger.warning(
-            f"[Paper Engine] 🔄 FULL RESET: {cancelled} positions cancelled."
-            " Fresh start."
+            f"[Paper Engine] 🔄 FULL RESET (hard_wipe={hard_wipe}): Starting fresh with "
+            f"₹{cfg.virtual_capital_inr:,.2f} INR | ${cfg.virtual_capital_usd:,.2f} USD."
         )
         return {
+            "hard_wipe": hard_wipe,
             "positions_cancelled": cancelled,
-            "new_balance_inr": self.config.paper_trading.virtual_capital_inr,
-            "new_balance_usd": self.config.paper_trading.virtual_capital_usd,
+            "new_balance_inr": cfg.virtual_capital_inr,
+            "new_balance_usd": cfg.virtual_capital_usd,
         }
+
 
     # ── Account queries ────────────────────────────────────────────────────────
 

@@ -65,6 +65,7 @@ def dry_run() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Aegis AI Financial Agent Daemon")
     parser.add_argument("--dry-run", action="store_true", help="Execute single immediate test cycle")
+    parser.add_argument("--reset", action="store_true", help="Reset all trades, positions, journal entries, and reset accounts from scratch")
     args = parser.parse_args()
 
     # Bootstrap databases and state
@@ -73,9 +74,26 @@ def main() -> None:
     init_advisory_db()
     init_state_table()
 
+    if args.reset:
+        from src.trading.paper_engine import PaperTradingEngine
+        from src.db.advisory_store import _conn as adv_conn
+        engine = PaperTradingEngine()
+        res = engine.full_reset(hard_wipe=True)
+        # Also clean advisory holdings
+        with adv_conn() as aconn:
+            aconn.execute("DELETE FROM advisory_holdings")
+            aconn.execute("DELETE FROM advisory_alerts")
+            aconn.commit()
+        logger.success(
+            f"✅ [Aegis Reset] All trades and journals wiped. "
+            f"Starting capital: ₹{res['new_balance_inr']:,.2f} INR | ${res['new_balance_usd']:,.2f} USD."
+        )
+        return
+
     if args.dry_run:
         dry_run()
         return
+
 
     # Notify Telegram on startup
     tg = TelegramNotifier()
