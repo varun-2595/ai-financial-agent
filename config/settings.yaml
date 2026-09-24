@@ -15,7 +15,7 @@ llm:
   local_enabled: true
   local_endpoint: "http://127.0.0.1:11434/v1"
   local_model: "qwen2.5:14b-instruct"
-  local_timeout_seconds: 5.0
+  local_timeout_seconds: 45.0
   max_retries: 3
   retry_delay_seconds: 5
 
