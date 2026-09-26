@@ -637,6 +637,53 @@ async def cmd_catalysts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+@authorized_admin
+async def cmd_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Trigger on-demand dispatch of the rich daily HTML portfolio report."""
+    if not update.message:
+        return
+
+    args = context.args or []
+    market = "india"
+    if args and args[0].lower() in ("us", "nyse", "nasdaq", "usa"):
+        market = "us"
+
+    await update.message.reply_text(f"📧 Generating and dispatching Aegis {market.upper()} EOD portfolio report...", parse_mode="HTML")
+
+    from src.notifier.email_sender import EmailNotifier
+    from src.notifier.formatter import format_eod_email_html
+    from src.trading.paper_engine import PaperTradingEngine
+    from src.analyst.learning_engine import LearningEngine
+    from src.journal.journal_store import DecisionJournalStore
+
+    engine = PaperTradingEngine()
+    summary = engine.get_portfolio_summary(market)
+    learning = LearningEngine()
+    eod_learning = learning.run_daily_eod_learning(market)
+    store = DecisionJournalStore()
+    closed_trades = store.get_recent_closed_trades(market=market, limit=20)
+
+    email_html = format_eod_email_html(
+        summary=summary,
+        closed_trades=closed_trades,
+        eod_learning=eod_learning,
+    )
+
+    notifier = EmailNotifier()
+    if not notifier.recipient or not notifier.password:
+        await update.message.reply_text("⚠️ <b>Email Failed</b>: GMAIL_SENDER, GMAIL_APP_PASSWORD, or GMAIL_RECIPIENT not set in .env.", parse_mode="HTML")
+        return
+
+    success = notifier.send_email(
+        subject=f"Aegis Daily Portfolio & Trade Learning Report — {market.upper()}",
+        html_body=email_html,
+    )
+    if success:
+        await update.message.reply_text(f"✅ <b>Email Delivered</b> to <code>{notifier.recipient}</code> with latest portfolio stats & trade autopsies.", parse_mode="HTML")
+    else:
+        await update.message.reply_text(f"❌ <b>Email Delivery Failed</b>: Check SMTP credentials in .env or application logs.", parse_mode="HTML")
+
+
 # ── Bot Server Application ───────────────────────────────────────────────────
 
 class AegisTelegramBot:
@@ -671,6 +718,8 @@ class AegisTelegramBot:
         self.app.add_handler(CommandHandler("analyze", cmd_analyze))
         self.app.add_handler(CommandHandler("catalysts", cmd_catalysts))
         self.app.add_handler(CommandHandler("news", cmd_catalysts))
+        self.app.add_handler(CommandHandler("email", cmd_email))
+        self.app.add_handler(CommandHandler("report", cmd_email))
 
     def run_polling(self) -> None:
         """Starts the long-polling loop (blocking the calling thread)."""

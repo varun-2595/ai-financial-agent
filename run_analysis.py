@@ -163,8 +163,31 @@ Examples:
     parser.add_argument("--watchlist",     action="store_true", help="Run analysis on all watchlist tickers")
     parser.add_argument("--json",          action="store_true", help="Output raw JSON instead of table")
     parser.add_argument("--market-status", action="store_true", help="Show current market open/closed status")
+    parser.add_argument("--send-email",    action="store_true", help="Dispatch test EOD portfolio report email")
 
     args = parser.parse_args()
+
+    if args.send_email:
+        from src.notifier.email_sender import EmailNotifier
+        from src.notifier.formatter import format_eod_email_html
+        from src.trading.paper_engine import PaperTradingEngine
+        from src.analyst.learning_engine import LearningEngine
+        from src.journal.journal_store import DecisionJournalStore
+
+        m = args.market or "india"
+        engine = PaperTradingEngine()
+        summary = engine.get_portfolio_summary(m)
+        learning = LearningEngine()
+        eod_learning = learning.run_daily_eod_learning(m)
+        store = DecisionJournalStore()
+        closed_trades = store.get_recent_closed_trades(market=m, limit=20)
+
+        html_body = format_eod_email_html(summary, closed_trades=closed_trades, eod_learning=eod_learning)
+        notifier = EmailNotifier()
+        print(f"Sending test EOD email for {m.upper()} to {notifier.recipient}...")
+        ok = notifier.send_email(f"Aegis Daily Portfolio & Trade Learning Report — {m.upper()}", html_body)
+        print(f"Result: {'SUCCESS' if ok else 'FAILED'}")
+        return
 
     if args.market_status:
         status = market_status()

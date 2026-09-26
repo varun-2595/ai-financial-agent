@@ -868,7 +868,7 @@ class PaperTradingEngine:
                 (acc_id,)
             ).fetchone()
             open_rows = conn.execute("""
-                SELECT ticker, quantity, avg_cost, current_price, direction, margin_blocked
+                SELECT ticker, quantity, avg_cost, current_price, direction, strategy, stop_loss, target_price, margin_blocked
                 FROM positions WHERE status = 'OPEN' AND market = ?
             """, (market,)).fetchall()
 
@@ -894,12 +894,18 @@ class PaperTradingEngine:
             notional = curr * row["quantity"]
             total_unrealized += upnl
             total_notional += notional
+            return_pct = round(((curr - row["avg_cost"]) / row["avg_cost"] * 100.0) if direction == "LONG" else ((row["avg_cost"] - curr) / row["avg_cost"] * 100.0), 2) if row["avg_cost"] > 0 else 0.0
             positions_data.append({
                 "ticker": row["ticker"],
                 "quantity": row["quantity"],
                 "avg_cost": row["avg_cost"],
                 "current_price": curr,
+                "direction": direction,
+                "strategy": row["strategy"] or "intraday",
+                "stop_loss": row["stop_loss"],
+                "target_price": row["target_price"],
                 "unrealized_pnl": round(upnl, 2),
+                "return_pct": return_pct,
                 "margin_blocked": row["margin_blocked"],
             })
 

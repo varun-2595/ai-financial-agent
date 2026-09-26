@@ -316,25 +316,35 @@ class DecisionJournalStore:
         """Fetch the most recent decision entries."""
         return self.get_journal_entries(limit=limit)
 
-    def get_recent_closed_trades(self, limit: int = 5) -> list[dict[str, Any]]:
+    def get_recent_closed_trades(
+        self,
+        market: Optional[str] = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
         """
         Fetch recent closed trades joining decision journal and trade evaluations
-        for Telegram /journal reporting.
+        for Telegram /journal and EOD email reporting.
         """
+        query = """
+            SELECT
+                j.journal_id, j.symbol, j.market, j.strategy, j.direction,
+                j.entry_price, j.exit_price, j.realized_pnl, j.return_pct,
+                j.holding_period_seconds, j.final_thesis, j.agent_outputs,
+                j.exit_reason, j.exit_timestamp,
+                e.thesis_notes, e.major_failure_reason, e.failure_details
+            FROM decision_journal j
+            LEFT JOIN trade_evaluations e ON j.journal_id = e.journal_id
+            WHERE j.status = 'CLOSED' AND j.realized_pnl IS NOT NULL
+        """
+        params: list[Any] = []
+        if market:
+            query += " AND LOWER(j.market) = ?"
+            params.append(market.lower())
+        query += " ORDER BY j.exit_timestamp DESC, j.updated_at DESC LIMIT ?"
+        params.append(limit)
+
         with self._conn() as conn:
-            rows = conn.execute("""
-                SELECT
-                    j.journal_id, j.symbol, j.market, j.strategy, j.direction,
-                    j.entry_price, j.exit_price, j.realized_pnl, j.return_pct,
-                    j.holding_period_seconds, j.final_thesis, j.agent_outputs,
-                    j.exit_reason, j.exit_timestamp,
-                    e.thesis_notes, e.major_failure_reason, e.failure_details
-                FROM decision_journal j
-                LEFT JOIN trade_evaluations e ON j.journal_id = e.journal_id
-                WHERE j.status = 'CLOSED' AND j.realized_pnl IS NOT NULL
-                ORDER BY j.exit_timestamp DESC, j.updated_at DESC
-                LIMIT ?
-            """, (limit,)).fetchall()
+            rows = conn.execute(query, params).fetchall()
 
             results: list[dict[str, Any]] = []
             for r in rows:

@@ -210,8 +210,18 @@ def job_eod_report(market: Literal["india", "us"]) -> None:
         report_text += "✨ <i>Zero losing trades today! Risk execution was flawless.</i>"
 
     tg.send_message(report_text)
-    email_html = format_eod_email_html(summary, [])
-    em.send_email(f"Daily Portfolio & Learning Report — {market.upper()}", email_html)
+
+    # Fetch today's closed trades from decision journal
+    from src.journal.journal_store import DecisionJournalStore
+    store = DecisionJournalStore()
+    closed_trades = store.get_recent_closed_trades(market=market, limit=20)
+
+    email_html = format_eod_email_html(
+        summary=summary,
+        closed_trades=closed_trades,
+        eod_learning=eod_learning,
+    )
+    em.send_email(f"Aegis Daily Portfolio & Learning Report — {market.upper()}", email_html)
 
 
 def job_monthly_advisory() -> None:
