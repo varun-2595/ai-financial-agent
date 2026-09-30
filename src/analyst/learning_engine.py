@@ -67,8 +67,10 @@ class LearningEngine:
         """
         ticker = pos["ticker"]
         market = pos["market"]
-        strategy = pos.get("strategy", "intraday")
-        direction = pos.get("direction", "BUY")
+        raw_strat = str(pos.get("strategy", "intraday")).lower()
+        strategy = raw_strat if raw_strat in ("scalping", "intraday", "swing", "positional") else "intraday"
+        raw_dir = str(pos.get("direction", "BUY")).upper()
+        direction = "BUY" if raw_dir in ("BUY", "LONG") else "SELL"
         avg_cost = pos["avg_cost"]
         current_p = pos.get("current_price") or avg_cost
         realized_pnl = pos.get("realized_pnl", 0.0)
