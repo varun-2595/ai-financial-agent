@@ -701,7 +701,8 @@ class AegisTelegramBot:
     Runs concurrently with the APScheduler.
     """
     def __init__(self, token: Optional[str] = None):
-        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
+        raw_token = token or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+        self.token = raw_token.strip("\"'").strip()
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required to run AegisTelegramBot.")
 
