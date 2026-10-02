@@ -149,6 +149,15 @@ class RiskEngine:
         # Conservative minimum across volatility risk, value cap, and cash
         quantity = min(qty_by_risk, qty_by_val, qty_by_cash)
 
+        # Minimum notional sizing floor (e.g. ₹1,500 INR / $100 USD) to prevent fee drag
+        min_notional = 1500.0 if snapshot.market == "india" else 100.0
+        min_qty_for_notional = math.ceil(min_notional / entry_price) if entry_price > 0 else 1
+
+        # If computed quantity is below notional floor, elevate to floor if cash and max loss permit
+        if 0 < quantity < min_qty_for_notional:
+            if effective_cash >= (min_qty_for_notional * entry_price) and (min_qty_for_notional * risk_per_share) <= (max_loss_allowed * 1.5):
+                quantity = min_qty_for_notional
+
         # Allow 1 share if cash & risk permit on small accounts
         if quantity <= 0 and effective_cash >= entry_price and risk_per_share <= (max_loss_allowed * 1.5):
             quantity = 1

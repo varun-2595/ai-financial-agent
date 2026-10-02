@@ -153,15 +153,24 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     di = engine.get_daily_stats("india")
     du = engine.get_daily_stats("us")
 
-    def pnl_line(stats: dict, cur: str) -> str:
+    def pnl_line(stats: dict, summary: dict, cur: str) -> str:
         r = stats["realized_pnl"]
         u = stats["unrealized_pnl"]
         t = stats["daily_target"]
-        emoji = "✅" if stats["target_met"] else ("🟡" if r > 0 else "🔴")
+        lr = stats.get("lifetime_realized_pnl", r)
+        lt = stats.get("lifetime_trades", stats["total_trades"])
+        lw = stats.get("lifetime_wins", stats["wins"])
+        ll = stats.get("lifetime_losses", stats["losses"])
+        lwr = stats.get("lifetime_win_rate_pct", 0.0)
+        nav = summary["total_value"]
+        init_cap = stats.get("initial_capital", summary.get("cash", 1.0))
+        nav_return_pct = ((nav - init_cap) / init_cap * 100.0) if init_cap > 0 else 0.0
+        emoji = "✅" if stats["target_met"] else ("🟢" if r > 0 else ("🟡" if r == 0 else "🔴"))
+        lifetime_emoji = "🟢" if lr > 0 else ("🟡" if lr == 0 else "🔴")
         return (
-            f"   • Realized P&L: <b>{cur}{r:+,.2f}</b> / Target: {cur}{t:,.0f} {emoji}\n"
-            f"   • Unrealized: {cur}{u:+,.2f} | Closed Trades: {stats['total_trades']} "
-            f"(W:{stats['wins']} L:{stats['losses']})"
+            f"   • 24h P&L: <b>{cur}{r:+,.2f}</b> / Target: {cur}{t:,.0f} {emoji} ({stats['total_trades']} trades, W:{stats['wins']} L:{stats['losses']})\n"
+            f"   • Lifetime P&L: <b>{cur}{lr:+,.2f}</b> {lifetime_emoji} ({lt} trades, Win Rate: {lwr}%, W:{lw} L:{ll})\n"
+            f"   • Net NAV Return: <b>{nav_return_pct:+.2f}%</b> | Unrealized: <b>{cur}{u:+,.2f}</b>"
         )
 
     text = (
@@ -173,12 +182,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"   • State: <b>{pause_india}</b> | True NAV: <b>₹{si['total_value']:,.2f}</b>\n"
         f"   • Free Cash: ₹{si['cash']:,.2f} | Margin Blocked: ₹{si['reserved_margin']:,.2f}\n"
         f"   • Active Positions: <b>{si['open_positions_count']}</b>\n"
-        f"{pnl_line(di, '₹')}\n\n"
+        f"{pnl_line(di, si, '₹')}\n\n"
         f"🇺🇸 <b>NYSE/NASDAQ (US):</b> {nyse_status}\n"
         f"   • State: <b>{pause_us}</b> | True NAV: <b>${su['total_value']:,.2f}</b>\n"
         f"   • Free Cash: ${su['cash']:,.2f} | Margin Blocked: ${su['reserved_margin']:,.2f}\n"
         f"   • Active Positions: <b>{su['open_positions_count']}</b>\n"
-        f"{pnl_line(du, '$')}\n"
+        f"{pnl_line(du, su, '$')}\n"
         "──────────────────────────────\n"
         f"⏱️ <i>Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>\n"
         "<i>Use /positions to view active trades or /reset to start fresh.</i>"

@@ -290,6 +290,43 @@ class DecisionJournalStore:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_evaluation(r) for r in rows]
 
+    def get_agent_scorecards(self) -> dict[str, AgentScorecard]:
+        """
+        Compute cumulative accuracy, win-rate, PnL attribution, and Brier calibration
+        scorecards for each agent across all evaluated trades.
+        """
+        evals = self.get_evaluations(limit=1000)
+        scorecards: dict[str, AgentScorecard] = {}
+
+        for ev in evals:
+            for agent_name, attr in ev.agent_accuracy.items():
+                if agent_name not in scorecards:
+                    scorecards[agent_name] = AgentScorecard(agent_name=agent_name)
+                sc = scorecards[agent_name]
+                sc.total_evaluations += 1
+
+                if attr.signal == "BUY":
+                    sc.bullish_calls += 1
+                elif attr.signal == "SELL":
+                    sc.bearish_calls += 1
+                else:
+                    sc.neutral_calls += 1
+
+                if attr.directional_accuracy >= 1.0:
+                    sc.correct_calls += 1
+                else:
+                    sc.incorrect_calls += 1
+
+                sc.total_pnl_attributed += ev.realized_pnl
+
+        for sc in scorecards.values():
+            if sc.total_evaluations > 0:
+                sc.win_rate = round(sc.correct_calls / sc.total_evaluations, 4)
+                sc.accuracy_rate = sc.win_rate
+                sc.total_pnl_attributed = round(sc.total_pnl_attributed, 2)
+
+        return scorecards
+
     def get_journal_entries(
         self,
         symbol: Optional[str] = None,

@@ -49,7 +49,7 @@ Buying Power
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
 from src.data.models import Order, Position, StockSnapshot, TradeSignal
@@ -219,18 +219,18 @@ class PaperTradingEngine:
         }
 
     def get_daily_realized_pnl(self, market: Literal["india", "us"]) -> float:
-        today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         with _conn() as conn:
             row = conn.execute("""
                 SELECT SUM(realized_pnl) as total_pnl
                 FROM positions
-                WHERE status = 'CLOSED' AND market = ? AND closed_at LIKE ?
-            """, (market, f"{today_date}%")).fetchone()
+                WHERE status = 'CLOSED' AND market = ? AND closed_at >= ?
+            """, (market, cutoff)).fetchone()
             return float(row["total_pnl"]) if (row and row["total_pnl"] is not None) else 0.0
 
     def get_daily_stats(self, market: Literal["india", "us"]) -> dict:
-        """Returns today's trade stats: wins, losses, P&L, unrealized P&L."""
-        today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        """Returns today/last-24h session stats AND lifetime stats (wins, losses, realized P&L, unrealized P&L)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         acc_id = self._acc_id(market)
 
         with _conn() as conn:
@@ -238,24 +238,40 @@ class PaperTradingEngine:
                 "SELECT cash, initial_cash, reserved_margin FROM accounts WHERE account_id = ?",
                 (acc_id,)
             ).fetchone()
-            closed = conn.execute("""
+            # Session trades (last 24 hours)
+            session_closed = conn.execute("""
                 SELECT realized_pnl FROM positions
-                WHERE status = 'CLOSED' AND market = ? AND closed_at LIKE ?
-            """, (market, f"{today_date}%")).fetchall()
+                WHERE status = 'CLOSED' AND market = ? AND closed_at >= ?
+            """, (market, cutoff)).fetchall()
+            # Lifetime all-time closed trades
+            all_closed = conn.execute("""
+                SELECT realized_pnl FROM positions
+                WHERE status = 'CLOSED' AND market = ?
+            """, (market,)).fetchall()
+            # Active open positions
             open_pos = conn.execute("""
                 SELECT quantity, avg_cost, current_price, direction FROM positions
                 WHERE status = 'OPEN' AND market = ?
             """, (market,)).fetchall()
 
-        realized_pnl = sum(r["realized_pnl"] for r in closed if r["realized_pnl"])
-        wins = [r for r in closed if (r["realized_pnl"] or 0) > 0]
-        losses = [r for r in closed if (r["realized_pnl"] or 0) < 0]
+        # 1. Session metrics
+        session_pnl = sum(r["realized_pnl"] for r in session_closed if r["realized_pnl"])
+        session_wins = [r for r in session_closed if (r["realized_pnl"] or 0) > 0]
+        session_losses = [r for r in session_closed if (r["realized_pnl"] or 0) < 0]
 
-        # Unrealized P&L: direction-aware
+        # 2. Lifetime metrics
+        total_pnl = sum(r["realized_pnl"] for r in all_closed if r["realized_pnl"])
+        total_wins = [r for r in all_closed if (r["realized_pnl"] or 0) > 0]
+        total_losses = [r for r in all_closed if (r["realized_pnl"] or 0) < 0]
+        total_count = len(all_closed)
+        lifetime_win_rate = round((len(total_wins) / total_count * 100.0), 1) if total_count > 0 else 0.0
+
+        # 3. Unrealized P&L: direction-aware
         unrealized = 0.0
         for r in open_pos:
             curr = r["current_price"] or r["avg_cost"]
-            if r["direction"] == "LONG":
+            is_long = str(r["direction"]).upper() in ("LONG", "BUY")
+            if is_long:
                 unrealized += (curr - r["avg_cost"]) * r["quantity"]
             else:
                 unrealized += (r["avg_cost"] - curr) * r["quantity"]
@@ -266,14 +282,20 @@ class PaperTradingEngine:
                   else self.config.paper_trading.daily_profit_target_usd)
 
         return {
-            "total_trades": len(closed),
-            "wins": len(wins),
-            "losses": len(losses),
-            "realized_pnl": round(realized_pnl, 2),
+            "total_trades": len(session_closed),
+            "wins": len(session_wins),
+            "losses": len(session_losses),
+            "realized_pnl": round(session_pnl, 2),
             "unrealized_pnl": round(unrealized, 2),
             "daily_target": target,
-            "target_met": realized_pnl >= target,
+            "target_met": session_pnl >= target,
             "initial_capital": initial,
+            # Lifetime metrics
+            "lifetime_trades": total_count,
+            "lifetime_wins": len(total_wins),
+            "lifetime_losses": len(total_losses),
+            "lifetime_realized_pnl": round(total_pnl, 2),
+            "lifetime_win_rate_pct": lifetime_win_rate,
         }
 
     def get_portfolio_risk_state(self, market: Literal["india", "us"]) -> PortfolioRiskState:

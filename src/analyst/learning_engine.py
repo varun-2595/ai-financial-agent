@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -180,12 +180,20 @@ class LearningEngine:
         Reviews today's closed trades, runs autopsies on any losses,
         and returns a performance & learning summary.
         """
-        today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         with _conn() as conn:
             rows = conn.execute("""
                 SELECT * FROM positions
-                WHERE status = 'CLOSED' AND market = ? AND closed_at LIKE ?
-            """, (market, f"{today_date}%")).fetchall()
+                WHERE status = 'CLOSED' AND market = ? AND closed_at >= ?
+                ORDER BY closed_at DESC
+            """, (market, cutoff)).fetchall()
+            if not rows:
+                # Fallback to the latest 10 closed trades if no trades closed in last 24h
+                rows = conn.execute("""
+                    SELECT * FROM positions
+                    WHERE status = 'CLOSED' AND market = ?
+                    ORDER BY closed_at DESC LIMIT 10
+                """, (market,)).fetchall()
             closed_trades = [dict(r) for r in rows]
 
         total_trades = len(closed_trades)

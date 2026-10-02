@@ -39,14 +39,32 @@ class SignalGenerator:
         """
         Synthesizes technical conditions, news catalysts, and LLM analysis to produce actionable TradeSignal.
         """
-        # Prevent duplicate entries if a position in this ticker is already open
+        # Prevent duplicate entries if a position in this ticker is already open or closed recently at a loss
         if not skip_db_check:
             try:
-                from src.db.trading_store import get_open_positions
+                from datetime import datetime, timezone, timedelta
+                from src.db.trading_store import _conn, get_open_positions
                 open_pos = get_open_positions(market=snapshot.market)
                 if any(p["ticker"] == snapshot.ticker for p in open_pos):
                     logger.debug(f"[Signal] Position already active for {snapshot.ticker}; skipping duplicate.")
                     return None
+
+                # 4-hour cooldown after a stopped-out / losing trade to prevent churn
+                cutoff_loss = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+                with _conn() as conn:
+                    last_closed = conn.execute("""
+                        SELECT realized_pnl, closed_at FROM positions
+                        WHERE ticker = ? AND status = 'CLOSED'
+                        ORDER BY closed_at DESC LIMIT 1
+                    """, (snapshot.ticker,)).fetchone()
+                    if last_closed:
+                        pnl = float(last_closed["realized_pnl"] or 0.0)
+                        closed_at_str = last_closed["closed_at"]
+                        if pnl < 0 and closed_at_str and closed_at_str >= cutoff_loss:
+                            logger.info(
+                                f"[Signal] ❄️ Ticker {snapshot.ticker} in loss cooldown until {closed_at_str} + 4h (PnL: {pnl:+.2f}). Skipping entry."
+                            )
+                            return None
             except Exception:
                 pass
 
@@ -79,30 +97,35 @@ class SignalGenerator:
             logger.info(f"[Signal] No buy signal for {snapshot.ticker} (action: {analysis.action})")
             return None
 
-
         current_p = snapshot.current_price
         direction: Literal["BUY", "SELL", "HOLD"] = "BUY"
+        atr = tech.atr_14 if (tech.atr_14 and tech.atr_14 > 0) else (current_p * 0.02)
 
         # Calculate entry, SL, and target based on strategy & technical levels
         if strategy == "scalping":
             entry = current_p
-            # Rapid momentum scalp: tight 0.8% stop loss, 1.8% quick profit target
-            stop_loss = round(current_p * 0.992, 2)
-            target = round(current_p * 1.018, 2)
+            # Volatility-aware scalp: 1.5% or 1.2*ATR stop loss, 2.5% or 2.2*ATR profit target
+            sl_dist = max(current_p * 0.015, atr * 1.2)
+            tgt_dist = max(current_p * 0.025, atr * 2.2)
+            stop_loss = round(current_p - sl_dist, 2)
+            target = round(current_p + tgt_dist, 2)
         elif strategy == "intraday":
             entry = current_p
-            # Intraday breakout: 1.5% stop loss, 2.8% profit target
-            stop_loss = round(levels.support_1 if levels.support_1 < current_p and (current_p - levels.support_1)/current_p <= 0.02 else current_p * 0.985, 2)
-            target = round(levels.resistance_1 if levels.resistance_1 > current_p and (levels.resistance_1 - current_p)/current_p >= 0.02 else current_p * 1.028, 2)
+            # Intraday momentum breakout
+            sl_dist = max(current_p * 0.020, atr * 1.5)
+            tgt_dist = max(current_p * 0.038, atr * 2.8)
+            stop_loss = round(levels.support_1 if (levels.support_1 < current_p and (current_p - levels.support_1) <= sl_dist * 1.2) else (current_p - sl_dist), 2)
+            target = round(levels.resistance_1 if (levels.resistance_1 > current_p and (levels.resistance_1 - current_p) >= tgt_dist * 0.8) else (current_p + tgt_dist), 2)
         elif strategy == "swing":
             entry = current_p
-            # Set stop loss just below key support or ATR
-            atr_sl = current_p - (tech.atr_14 * 1.5 if tech.atr_14 else current_p * 0.03)
-            stop_loss = round(min(levels.support_1, atr_sl) if levels.support_1 < current_p else atr_sl, 2)
-            target = round(levels.resistance_2 if levels.resistance_2 > current_p else current_p * 1.06, 2)
+            # Swing setup: support/ATR based
+            sl_dist = max(current_p * 0.035, atr * 2.0)
+            tgt_dist = max(current_p * 0.075, atr * 4.0)
+            stop_loss = round(min(levels.support_1, current_p - sl_dist) if levels.support_1 < current_p else (current_p - sl_dist), 2)
+            target = round(levels.resistance_2 if levels.resistance_2 > current_p else (current_p + tgt_dist), 2)
         else: # positional
             entry = current_p
-            stop_loss = round(levels.support_2 if levels.support_2 < current_p else current_p * 0.92, 2)
+            stop_loss = round(levels.support_2 if levels.support_2 < current_p else current_p * 0.90, 2)
             target = round(current_p * 1.15, 2)
 
         # 3. Risk Sizing & Approval
