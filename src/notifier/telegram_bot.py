@@ -30,8 +30,10 @@ class TelegramNotifier:
     Used by scheduled jobs and background monitors.
     """
     def __init__(self, token: Optional[str] = None, chat_id: Optional[str] = None):
-        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        raw_token = token or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+        self.token = raw_token.split("#")[0].strip().strip("\"'")
+        raw_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID") or ""
+        self.chat_id = raw_chat_id.split("#")[0].strip().strip("\"'")
         self.base_url = f"https://api.telegram.org/bot{self.token}" if self.token else None
 
     def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
@@ -62,13 +64,14 @@ class TelegramNotifier:
 
 def _get_allowed_user_ids() -> set[str]:
     allowed = set()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").split("#")[0].strip().strip("\"'")
     if chat_id:
-        allowed.add(str(chat_id).strip())
+        allowed.add(chat_id)
     allowed_env = os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
     for uid in allowed_env.split(","):
-        if uid.strip():
-            allowed.add(str(uid).strip())
+        cleaned = uid.split("#")[0].strip().strip("\"'")
+        if cleaned:
+            allowed.add(cleaned)
     return allowed
 
 
