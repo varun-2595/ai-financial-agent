@@ -158,6 +158,30 @@ class PortfolioRiskManager:
         if not dd_passed:
             violations.append(f"Portfolio drawdown circuit breaker active ({risk_state.current_drawdown_pct*100:.1f}% >= {max_dd_pct*100:.1f}%)")
 
+        # 3b. Loss-Streak Circuit Breaker (Max 3 consecutive losses in session halts new entries)
+        consecutive_losses = 0
+        try:
+            from src.db.trading_store import _conn
+            with _conn() as conn:
+                recent_trades = conn.execute("""
+                    SELECT realized_pnl FROM positions
+                    WHERE status = 'CLOSED' AND market = ?
+                    ORDER BY closed_at DESC LIMIT 5
+                """, (market,)).fetchall()
+                for r in recent_trades:
+                    if (r["realized_pnl"] or 0) < 0:
+                        consecutive_losses += 1
+                    else:
+                        break
+        except Exception:
+            consecutive_losses = 0
+
+        if consecutive_losses >= 3:
+            violations.append(f"Session loss-streak circuit breaker active ({consecutive_losses} consecutive losses in {market.upper()})")
+        elif consecutive_losses == 2:
+            warnings.append("Loss-streak dampener active (2 consecutive losses); position size reduced by 50%")
+            req_qty = max(1, req_qty // 2)
+
         # 4. Cash Constraint (Requested order cannot exceed available cash)
         is_margin = strategy in ("scalping", "intraday")
         leverage = cfg_paper.intraday_leverage_multiplier if is_margin else 1.0

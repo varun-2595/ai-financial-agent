@@ -93,8 +93,8 @@ class RiskEngine:
             risk_per_share = stop_loss - entry_price
             reward_per_share = entry_price - target_price
 
-        # Check Risk-to-Reward (min 1:1.2 for scalping, 1:1.3 for others)
-        min_rr = 1.2 if strategy == "scalping" else 1.3
+        # Check Risk-to-Reward (min 1:1.5 for scalping, 1:1.8 for intraday, 1:2.0 for swing)
+        min_rr = 1.5 if strategy == "scalping" else (1.8 if strategy == "intraday" else 2.0)
         rr_ratio = reward_per_share / risk_per_share if risk_per_share > 0 else 0
         if rr_ratio < min_rr:
             return SizingResult(False, 0, entry_price, stop_loss, target_price, 0, 0, f"Unfavorable Risk:Reward ratio ({rr_ratio:.2f} < {min_rr})")

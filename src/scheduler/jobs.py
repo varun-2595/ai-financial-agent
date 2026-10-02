@@ -121,6 +121,17 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
         logger.warning(f"[Job] 🛑 {market.upper()} Daily Max Loss Limit Reached ({currency_sym}{daily_pnl:,.2f} <= -{currency_sym}{max_loss:,.2f})! Halting new entries.")
         return
 
+    # 2b. Macro Market Regime Gatekeeper (Block longs during broader index downtrends)
+    from src.screener.regime import MarketRegimeDetector
+    regime_detector = MarketRegimeDetector()
+    regime = regime_detector.get_market_regime(market)
+    if not regime.allows_long:
+        logger.warning(
+            f"[Job] 🛡️ {market.upper()} Macro Regime Defense: {regime.summary}. "
+            "Skipping new long signal scans to protect capital."
+        )
+        return
+
     # 3. Scan for new trading signals
 
     for t_info in tickers_info:

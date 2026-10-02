@@ -660,6 +660,7 @@ class PaperTradingEngine:
         Returns list of close report strings.
         """
         positions_to_close: list[tuple] = []
+        closed_reports = []
 
         with _conn() as conn:
             rows = conn.execute("""
@@ -676,21 +677,83 @@ class PaperTradingEngine:
                     (curr_p, row["id"])
                 )
                 sl, tgt = row["stop_loss"], row["target_price"]
-                if sl and curr_p <= sl:
-                    positions_to_close.append((
-                        row["id"], ticker, row["quantity"], row["avg_cost"],
-                        curr_p, row["margin_blocked"], row["fees_paid"],
-                        f"STOP LOSS HIT @ {curr_p:.4f} (SL: {sl})", row["strategy"],
-                    ))
-                elif tgt and curr_p >= tgt:
-                    positions_to_close.append((
-                        row["id"], ticker, row["quantity"], row["avg_cost"],
-                        curr_p, row["margin_blocked"], row["fees_paid"],
-                        f"TARGET HIT @ {curr_p:.4f} (TGT: {tgt})", row["strategy"],
-                    ))
+                avg_cost = float(row["avg_cost"])
+                qty = int(row["quantity"])
+                is_long = str(row["direction"]).upper() in ("LONG", "BUY")
+
+                # Stage 1: Full exits on Stop Loss or Final Target
+                if is_long:
+                    if tgt and curr_p >= tgt:
+                        positions_to_close.append((
+                            row["id"], ticker, qty, avg_cost,
+                            curr_p, row["margin_blocked"], row["fees_paid"],
+                            f"TARGET HIT @ {curr_p:.4f} (TGT: {tgt})", row["strategy"],
+                        ))
+                        continue
+                    elif sl and curr_p <= sl:
+                        positions_to_close.append((
+                            row["id"], ticker, qty, avg_cost,
+                            curr_p, row["margin_blocked"], row["fees_paid"],
+                            f"STOP LOSS HIT @ {curr_p:.4f} (SL: {sl})", row["strategy"],
+                        ))
+                        continue
+                else:
+                    if tgt and curr_p <= tgt:
+                        positions_to_close.append((
+                            row["id"], ticker, qty, avg_cost,
+                            curr_p, row["margin_blocked"], row["fees_paid"],
+                            f"TARGET HIT @ {curr_p:.4f} (TGT: {tgt})", row["strategy"],
+                        ))
+                        continue
+                    elif sl and curr_p >= sl:
+                        positions_to_close.append((
+                            row["id"], ticker, qty, avg_cost,
+                            curr_p, row["margin_blocked"], row["fees_paid"],
+                            f"STOP LOSS HIT @ {curr_p:.4f} (SL: {sl})", row["strategy"],
+                        ))
+                        continue
+
+                # Stage 2: Multi-stage check for +1.5R partial profit take & Breakeven SL
+                if sl and qty > 1:
+                    r_distance = abs(avg_cost - float(sl))
+                    if is_long:
+                        partial_trigger = avg_cost + (1.5 * r_distance)
+                        # Trigger partial profit if price >= +1.5R and SL is still below entry
+                        if curr_p >= partial_trigger and float(sl) < avg_cost:
+                            sell_qty = max(1, int(qty // 2))
+                            logger.success(
+                                f"[Paper Engine] 🎯 Multi-Stage: {ticker} reached +1.5R (+{((curr_p - avg_cost)/avg_cost)*100:.2f}%). "
+                                f"Booking 50% profit ({sell_qty} shs) and moving SL to BREAKEVEN ({avg_cost:.2f})."
+                            )
+                            # Update stop loss to breakeven
+                            conn.execute(
+                                "UPDATE positions SET stop_loss = ? WHERE id = ?",
+                                (avg_cost, row["id"])
+                            )
+                            conn.commit()
+                            partial_rep = self.sell_partial(ticker, market, curr_p, sell_qty)
+                            if partial_rep:
+                                closed_reports.append(partial_rep)
+                            continue
+                    else:
+                        partial_trigger = avg_cost - (1.5 * r_distance)
+                        if curr_p <= partial_trigger and float(sl) > avg_cost:
+                            sell_qty = max(1, int(qty // 2))
+                            logger.success(
+                                f"[Paper Engine] 🎯 Multi-Stage SHORT: {ticker} reached +1.5R. "
+                                f"Booking 50% profit and moving SL to BREAKEVEN ({avg_cost:.2f})."
+                            )
+                            conn.execute(
+                                "UPDATE positions SET stop_loss = ? WHERE id = ?",
+                                (avg_cost, row["id"])
+                            )
+                            conn.commit()
+                            partial_rep = self.sell_partial(ticker, market, curr_p, sell_qty)
+                            if partial_rep:
+                                closed_reports.append(partial_rep)
+                            continue
             conn.commit()
 
-        closed_reports = []
         for pos_id, ticker, qty, avg_cost, curr_p, margin_blocked, fees_paid, reason, strategy in positions_to_close:
             report = self._close_position_record(
                 pos_id=pos_id, ticker=ticker, qty=qty, avg_cost=avg_cost,
