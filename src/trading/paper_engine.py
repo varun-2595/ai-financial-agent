@@ -90,10 +90,17 @@ class PaperTradingEngine:
 
     def _ensure_accounts(self) -> None:
         with _conn() as conn:
+            for acc_id in ("paper_inr", "paper_usd", "paper_crypto"):
+                row = conn.execute(
+                    "SELECT initial_cash FROM accounts WHERE account_id = ?", (acc_id,)
+                ).fetchone()
+                if row is None:
+                    self.reset_account_balances()
+                    return
             row_inr = conn.execute(
                 "SELECT initial_cash FROM accounts WHERE account_id = 'paper_inr'"
             ).fetchone()
-            if row_inr is None or row_inr["initial_cash"] != self.config.paper_trading.virtual_capital_inr:
+            if row_inr and row_inr["initial_cash"] != self.config.paper_trading.virtual_capital_inr:
                 self.reset_account_balances()
 
     def reset_account_balances(self) -> None:
@@ -1034,8 +1041,8 @@ class PaperTradingEngine:
         if not nav:
             return {
                 "market": market,
-                "currency": "₹" if market == "india" else "$",
-                "cash": 0.0, "invested": 0.0, "total_value": 0.0,
+                "currency": "₹" if market == "india" else ("₮" if market == "crypto" else "$"),
+                "cash": 0.0, "reserved_margin": 0.0, "invested": 0.0, "total_value": 0.0,
                 "open_positions_count": 0, "positions": [],
             }
         return {
