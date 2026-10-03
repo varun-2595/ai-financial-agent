@@ -113,14 +113,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Trading & Portfolio Controls:</b>\n"
         "• <code>/status</code> — System health, active LLM, market states & NAV\n"
         "• <code>/positions</code> (or <code>/portfolio</code>) — Live active positions & mark-to-market P&L\n"
-        "• <code>/pause [india|us|all]</code> — Pause new entries (trailing stops stay active)\n"
-        "• <code>/resume [india|us|all]</code> — Resume autonomous scanning & execution\n"
-        "• <code>/stop [india|us|all]</code> — 🚨 Emergency square-off all positions & pause\n"
+        "• <code>/pause [india|us|crypto|all]</code> — Pause new entries (trailing stops stay active)\n"
+        "• <code>/resume [india|us|crypto|all]</code> — Resume autonomous scanning & execution\n"
+        "• <code>/stop [india|us|crypto|all]</code> — 🚨 Emergency square-off all positions & pause\n"
         "• <code>/reset</code> — 🔄 Clean wipe of positions & fresh capital restart\n\n"
         "<b>Watchlist Management:</b>\n"
-        "• <code>/watchlist [india|us]</code> — List active screened tickers\n"
-        "• <code>/include &lt;TICKER&gt; [india|us]</code> — Pin stock permanently to watchlist\n"
-        "• <code>/exclude &lt;TICKER&gt;</code> — Remove stock from active watchlist\n\n"
+        "• <code>/watchlist [india|us|crypto]</code> — List active screened tickers\n"
+        "• <code>/include &lt;TICKER&gt; [india|us|crypto]</code> — Pin ticker permanently to watchlist\n"
+        "• <code>/exclude &lt;TICKER&gt;</code> — Remove ticker from active watchlist\n\n"
         "<b>Observability & Multi-Agent Intelligence:</b>\n"
         "• <code>/journal</code> — View recent immutable trade decision entries\n"
         "• <code>/scorecard</code> — View multi-agent calibration & accuracy scorecards\n"
@@ -140,8 +140,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     nse_status = "🟢 OPEN" if is_nse_open() else "🔴 CLOSED"
     nyse_status = "🟢 OPEN" if is_nyse_open() else "🔴 CLOSED"
+    crypto_status = "🟢 24/7 ACTIVE"
     pause_india = "⏸️ PAUSED" if is_trading_paused("india") else "▶️ ACTIVE"
     pause_us = "⏸️ PAUSED" if is_trading_paused("us") else "▶️ ACTIVE"
+    pause_crypto = "⏸️ PAUSED" if is_trading_paused("crypto") else "▶️ ACTIVE"
 
     try:
         from src.gateway.router import ModelRouter
@@ -153,8 +155,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     engine = PaperTradingEngine()
     si = engine.get_portfolio_summary("india")
     su = engine.get_portfolio_summary("us")
+    sc = engine.get_portfolio_summary("crypto")
     di = engine.get_daily_stats("india")
     du = engine.get_daily_stats("us")
+    dc = engine.get_daily_stats("crypto")
 
     def pnl_line(stats: dict, summary: dict, cur: str) -> str:
         r = stats["realized_pnl"]
@@ -190,7 +194,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"   • State: <b>{pause_us}</b> | True NAV: <b>${su['total_value']:,.2f}</b>\n"
         f"   • Free Cash: ${su['cash']:,.2f} | Margin Blocked: ${su['reserved_margin']:,.2f}\n"
         f"   • Active Positions: <b>{su['open_positions_count']}</b>\n"
-        f"{pnl_line(du, su, '$')}\n"
+        f"{pnl_line(du, su, '$')}\n\n"
+        f"🪙 <b>Crypto (24/7/365):</b> {crypto_status}\n"
+        f"   • State: <b>{pause_crypto}</b> | True NAV: <b>₮{sc['total_value']:,.2f}</b>\n"
+        f"   • Free Cash: ₮{sc['cash']:,.2f} | Margin Blocked: ₮{sc['reserved_margin']:,.2f}\n"
+        f"   • Active Positions: <b>{sc['open_positions_count']}</b>\n"
+        f"{pnl_line(dc, sc, '₮')}\n"
         "──────────────────────────────\n"
         f"⏱️ <i>Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>\n"
         "<i>Use /positions to view active trades or /reset to start fresh.</i>"
@@ -210,8 +219,9 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• All active/closed positions & trade history wiped cleanly.\n"
         f"• 🇮🇳 India starting capital: <b>₹{result['new_balance_inr']:,.2f} INR</b>\n"
         f"• 🇺🇸 US starting capital: <b>${result['new_balance_usd']:,.2f} USD</b>\n"
+        f"• 🪙 Crypto starting capital: <b>₮{result.get('new_balance_crypto', 1000.0):,.2f} USDT</b>\n"
         "──────────────────────────────\n"
-        "<i>Clean slate active. The agent will evaluate new setups on the next 15-minute cycle.</i>"
+        "<i>Clean slate active. The agent will evaluate new setups on the next cycle.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -221,8 +231,8 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     target = context.args[0].lower() if context.args else "all"
-    if target not in ("india", "us", "all"):
-        await update.message.reply_text("Usage: <code>/pause [india|us|all]</code>", parse_mode="HTML")
+    if target not in ("india", "us", "crypto", "all"):
+        await update.message.reply_text("Usage: <code>/pause [india|us|crypto|all]</code>", parse_mode="HTML")
         return
 
     set_trading_paused(target, True)
@@ -239,14 +249,14 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     target = context.args[0].lower() if context.args else "all"
-    if target not in ("india", "us", "all"):
-        await update.message.reply_text("Usage: <code>/resume [india|us|all]</code>", parse_mode="HTML")
+    if target not in ("india", "us", "crypto", "all"):
+        await update.message.reply_text("Usage: <code>/resume [india|us|crypto|all]</code>", parse_mode="HTML")
         return
 
     set_trading_paused(target, False)
     await update.message.reply_text(
         f"▶️ <b>Trading RESUMED for {target.upper()}</b>\n"
-        "Autonomous 15-minute signal scans and order execution are now active.",
+        "Autonomous signal scans and order execution are now active.",
         parse_mode="HTML"
     )
 
@@ -256,8 +266,8 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     target = context.args[0].lower() if context.args else "all"
-    if target not in ("india", "us", "all"):
-        await update.message.reply_text("Usage: <code>/stop [india|us|all]</code>", parse_mode="HTML")
+    if target not in ("india", "us", "crypto", "all"):
+        await update.message.reply_text("Usage: <code>/stop [india|us|crypto|all]</code>", parse_mode="HTML")
         return
 
     # 1. Pause immediately
@@ -270,6 +280,8 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reports.extend(engine.close_all_positions("india"))
     if target in ("us", "all"):
         reports.extend(engine.close_all_positions("us"))
+    if target in ("crypto", "all"):
+        reports.extend(engine.close_all_positions("crypto"))
 
     report_lines = "\n".join(reports) if reports else "No active positions were open."
 
@@ -296,6 +308,7 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Fetch real-time market prices to calculate current live mark-to-market P&L
     tickers_in = [p["ticker"] for p in positions if p["market"] == "india"]
     tickers_us = [p["ticker"] for p in positions if p["market"] == "us"]
+    tickers_cr = [p["ticker"] for p in positions if p["market"] == "crypto"]
     live_prices: dict[str, float] = {}
 
     try:
@@ -308,6 +321,11 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             from src.data.fetcher_us import fetch_us_batch
             snaps_us = fetch_us_batch(tickers_us, delay_seconds=0.1)
             for t, s in snaps_us.items():
+                live_prices[t] = s.current_price
+        if tickers_cr:
+            from src.data.fetcher_crypto import fetch_crypto_batch
+            snaps_cr = fetch_crypto_batch(tickers_cr)
+            for t, s in snaps_cr.items():
                 live_prices[t] = s.current_price
     except Exception as exc:
         logger.warning(f"[Telegram] Live price refresh error: {exc}")
@@ -356,6 +374,7 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     india_pos = [p for p in positions if p["market"] == "india"]
     us_pos = [p for p in positions if p["market"] == "us"]
+    crypto_pos = [p for p in positions if p["market"] == "crypto"]
 
     parts = []
     if not target or target == "india":
@@ -364,6 +383,10 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             parts.append(block)
     if not target or target == "us":
         block = render_market_block("NYSE/NASDAQ  🇺🇸 US", "🇺🇸", "$", us_pos)
+        if block:
+            parts.append(block)
+    if not target or target == "crypto":
+        block = render_market_block("24/7 Crypto  🪙 Assets", "🪙", "₮", crypto_pos)
         if block:
             parts.append(block)
 
@@ -401,25 +424,37 @@ async def cmd_include(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not context.args:
         await update.message.reply_text(
-            "Usage: <code>/include &lt;TICKER&gt; [india|us]</code>\n"
-            "Example: <code>/include INFY.NS india</code> or <code>/include NVDA us</code>",
+            "Usage: <code>/include &lt;TICKER&gt; [india|us|crypto]</code>\n"
+            "Example: <code>/include INFY.NS india</code>, <code>/include NVDA us</code>, or <code>/include BTC/USDT crypto</code>",
             parse_mode="HTML"
         )
         return
 
-    ticker = context.args[0].upper()
-    market = "india" if (".NS" in ticker or ".BO" in ticker) else "us"
+    raw_ticker = context.args[0].upper()
+    if "/" in raw_ticker or raw_ticker.endswith("USDT") or raw_ticker in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
+        market = "crypto"
+    elif ".NS" in raw_ticker or ".BO" in raw_ticker:
+        market = "india"
+    else:
+        market = "us"
+
     if len(context.args) > 1:
         market = context.args[1].lower()
 
-    if market not in ("india", "us"):
-        await update.message.reply_text("❌ Market must be <code>india</code> or <code>us</code>.", parse_mode="HTML")
+    if market not in ("india", "us", "crypto"):
+        await update.message.reply_text("❌ Market must be <code>india</code>, <code>us</code>, or <code>crypto</code>.", parse_mode="HTML")
         return
+
+    if market == "crypto":
+        from src.data.fetcher_crypto import normalize_crypto_ticker
+        ticker = normalize_crypto_ticker(raw_ticker)
+    else:
+        ticker = raw_ticker
 
     added = add_ticker(
         ticker=ticker,
         market=market,
-        strategies=["swing", "intraday"],
+        strategies=["swing", "intraday", "scalping"],
         source="telegram_command",
         pinned=True,
     )
@@ -546,22 +581,32 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    ticker = context.args[0].upper()
-    await update.message.reply_text(f"🔍 <i>Analyzing {ticker}... fetching live data & running multi-agent evaluation...</i>", parse_mode="HTML")
+    raw_ticker = context.args[0].upper().strip()
+    await update.message.reply_text(f"🔍 <i>Analyzing {raw_ticker}... fetching live data & running multi-agent evaluation...</i>", parse_mode="HTML")
 
     from src.analyst.engine import AnalystEngine
     from src.data.fetcher_india import fetch_india_stock
     from src.data.fetcher_us import fetch_us_stock
 
-    is_india = (".NS" in ticker or ".BO" in ticker)
+    is_crypto = ("/" in raw_ticker or raw_ticker.endswith("USDT") or raw_ticker in ("BTC", "ETH", "SOL", "XRP", "DOGE"))
+    is_india = (".NS" in raw_ticker or ".BO" in raw_ticker)
     try:
-        snapshot = fetch_india_stock(ticker) if is_india else fetch_us_stock(ticker)
+        if is_crypto:
+            from src.data.fetcher_crypto import fetch_crypto_snapshot, normalize_crypto_ticker
+            ticker = normalize_crypto_ticker(raw_ticker)
+            snapshot = fetch_crypto_snapshot(ticker)
+        elif is_india:
+            ticker = raw_ticker
+            snapshot = fetch_india_stock(ticker)
+        else:
+            ticker = raw_ticker
+            snapshot = fetch_us_stock(ticker)
     except Exception as exc:
-        await update.message.reply_text(f"❌ Failed to fetch data for <code>{ticker}</code>: {html.escape(str(exc))}", parse_mode="HTML")
+        await update.message.reply_text(f"❌ Failed to fetch data for <code>{raw_ticker}</code>: {html.escape(str(exc))}", parse_mode="HTML")
         return
 
     if not snapshot:
-        await update.message.reply_text(f"❌ Could not retrieve market data for <code>{ticker}</code>.", parse_mode="HTML")
+        await update.message.reply_text(f"❌ Could not retrieve market data for <code>{raw_ticker}</code>.", parse_mode="HTML")
         return
 
     try:
@@ -572,7 +617,7 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     action_emoji = "🟢" if "Buy" in analysis.action else ("🔴" if "Avoid" in analysis.action else "🟡")
-    currency = "₹" if is_india else "$"
+    currency = "₮" if is_crypto else ("₹" if is_india else "$")
 
     attractive_bullets = "\n".join(f"  • {html.escape(r)}" for r in analysis.reasons_attractive)
     risk_bullets = "\n".join(f"  • {html.escape(r)}" for r in analysis.risks)

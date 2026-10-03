@@ -260,7 +260,6 @@ class PortfolioRiskManager:
         # A. Trade-level risk cap (max % of NAV lost if stop-loss hit)
         max_risk_pct = 0.05 if strategy in ("scalping", "intraday") else max(0.05, cfg_paper.risk_per_trade_pct)
         max_loss_budget = nav * max_risk_pct
-        qty_cap_risk = int(max_loss_budget / risk_per_share) if risk_per_share > 0 else 0
 
         # B. Position size cap (% of NAV)
         if strategy == "scalping":
@@ -271,45 +270,61 @@ class PortfolioRiskManager:
             max_pos_val = nav * 0.50
         else:
             max_pos_val = nav * 0.25
-        qty_cap_pos = max(1, int(max_pos_val / entry_price))
 
         # C. Sector exposure cap (% of NAV)
         curr_sector_val = risk_state.sector_exposures.get(sector_name, 0.0)
-        max_sector_val = nav * cfg_paper.max_sector_pct
+        max_sector_pct = 1.0 if market == "crypto" else cfg_paper.max_sector_pct
+        max_sector_val = nav * max_sector_pct
         available_sector_val = max(0.0, max_sector_val - curr_sector_val)
-        qty_cap_sector = int(available_sector_val / entry_price)
 
         # D. Available Cash / Buying Power
         # margin per share = entry_price / leverage
         margin_per_share = entry_price / leverage
-        qty_cap_cash = int(risk_state.cash / margin_per_share) if margin_per_share > 0 else 0
 
         # E. ADV Volume cap
         qty_cap_adv = max_qty_by_adv
-
-        # F. Portfolio Beta constraint
-        # projected_beta = (sum(pos_val * beta) + new_val * stock_beta) / total_exposure
         stock_beta = snapshot.fundamentals.beta if (snapshot and snapshot.fundamentals and snapshot.fundamentals.beta) else 1.0
-        # If stock beta is very high (> 1.8), restrict size to keep portfolio beta under limit
-        if stock_beta > self.max_portfolio_beta and risk_state.portfolio_beta > 1.2:
-            qty_cap_beta = max(1, int((nav * 0.15 * leverage) / entry_price))
+
+        # F. Sizing calculation by market type (fractional for crypto, integer for equities)
+        if market == "crypto":
+            qty_cap_risk = max_loss_budget / risk_per_share if risk_per_share > 0 else 0.0
+            qty_cap_pos = max_pos_val / entry_price
+            qty_cap_sector = available_sector_val / entry_price
+            qty_cap_cash = risk_state.cash / margin_per_share if margin_per_share > 0 else 0.0
+            qty_cap_adv = float(max_qty_by_adv)
+            qty_cap_beta = float(req_qty)
+            candidate_qty = round(min(
+                req_qty,
+                qty_cap_risk,
+                qty_cap_pos,
+                qty_cap_sector,
+                qty_cap_cash,
+                qty_cap_adv,
+                qty_cap_beta,
+            ), 4)
         else:
-            qty_cap_beta = req_qty
+            qty_cap_risk = int(max_loss_budget / risk_per_share) if risk_per_share > 0 else 0
+            qty_cap_pos = max(1, int(max_pos_val / entry_price))
+            qty_cap_sector = int(available_sector_val / entry_price)
+            qty_cap_cash = int(risk_state.cash / margin_per_share) if margin_per_share > 0 else 0
 
-        # Sizing decision: minimum permitted across all mathematical bounds
-        candidate_qty = min(
-            req_qty,
-            qty_cap_risk,
-            qty_cap_pos,
-            qty_cap_sector,
-            qty_cap_cash,
-            qty_cap_adv,
-            qty_cap_beta,
-        )
+            if stock_beta > self.max_portfolio_beta and risk_state.portfolio_beta > 1.2:
+                qty_cap_beta = max(1, int((nav * 0.15 * leverage) / entry_price))
+            else:
+                qty_cap_beta = req_qty
 
-        # Edge case: If integer truncation gives 0 on small balances, allow 1 share if cash allows
-        if candidate_qty <= 0 and risk_state.cash >= margin_per_share and available_sector_val >= entry_price:
-            candidate_qty = 1
+            candidate_qty = min(
+                req_qty,
+                qty_cap_risk,
+                qty_cap_pos,
+                qty_cap_sector,
+                qty_cap_cash,
+                qty_cap_adv,
+                qty_cap_beta,
+            )
+            # Edge case: If integer truncation gives 0 on small balances, allow 1 share if cash allows
+            if candidate_qty <= 0 and risk_state.cash >= margin_per_share and available_sector_val >= entry_price:
+                candidate_qty = 1
 
         # Check Cash Constraint Result
         cash_passed = candidate_qty > 0 and (candidate_qty * margin_per_share) <= risk_state.cash
@@ -444,7 +459,7 @@ class PortfolioRiskManager:
 
     def check_and_enforce_intraday_circuit_breaker(
         self,
-        market: Literal["india", "us"],
+        market: Literal["india", "us", "crypto"],
         current_nav: float,
         peak_nav: float,
         max_drawdown_limit_pct: float = 0.02,  # 2.0% peak-to-trough drop limit
@@ -474,7 +489,7 @@ class PortfolioRiskManager:
 
     def execute_emergency_kill_switch(
         self,
-        market: Literal["india", "us"],
+        market: Literal["india", "us", "crypto"],
         current_nav: float,
         peak_nav: float,
         drawdown_pct: float,

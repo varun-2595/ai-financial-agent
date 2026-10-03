@@ -18,6 +18,7 @@ from src.analyst.learning_engine import LearningEngine, init_playbook_table
 def setup_db():
     init_trading_db()
     init_playbook_table()
+    PaperTradingEngine().full_reset(hard_wipe=True)
 
 
 def test_account_reset_and_capital():

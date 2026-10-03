@@ -45,8 +45,8 @@ class RiskCheckResult(BaseModel):
 
 class PortfolioRiskState(BaseModel):
     """Live risk snapshot of the trading portfolio."""
-    market: Literal["india", "us"]
-    currency: Literal["INR", "USD"]
+    market: Literal["india", "us", "crypto"]
+    currency: Literal["INR", "USD", "USDT"]
     nav: float
     peak_nav: float
     cash: float
@@ -66,11 +66,11 @@ class RiskEvaluationResult(BaseModel):
     """Overall outcome of portfolio-level risk evaluation."""
     decision: RiskDecision
     ticker: str
-    market: Literal["india", "us"]
+    market: Literal["india", "us", "crypto"]
     strategy: str
     direction: Literal["BUY", "SELL"]
-    requested_quantity: int
-    approved_quantity: int
+    requested_quantity: float
+    approved_quantity: float
     entry_price: float
     stop_loss: float
     target_price: float
@@ -92,8 +92,8 @@ class RiskAuditRecord(BaseModel):
     market: str
     strategy: str
     direction: str
-    requested_quantity: int
-    approved_quantity: int
+    requested_quantity: float
+    approved_quantity: float
     decision: str
     entry_price: float
     approved_margin: float

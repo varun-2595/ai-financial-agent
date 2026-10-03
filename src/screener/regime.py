@@ -15,7 +15,7 @@ from src.utils.logger import logger
 
 @dataclass
 class MarketRegime:
-    market: Literal["india", "us"]
+    market: Literal["india", "us", "crypto"]
     benchmark_symbol: str
     current_price: float
     ema_20: float
@@ -35,6 +35,7 @@ class MarketRegimeDetector:
     BENCHMARK_MAPPING = {
         "india": {"primary": "^NSEI", "alt": "NIFTYBEES.NS", "name": "NIFTY 50"},
         "us": {"primary": "SPY", "alt": "^GSPC", "name": "S&P 500"},
+        "crypto": {"primary": "BTC/USDT", "alt": "BTCUSDT", "name": "Bitcoin (BTC)"},
     }
 
     def __init__(self):
@@ -61,9 +62,9 @@ class MarketRegimeDetector:
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
-    def get_market_regime(self, market: Literal["india", "us"], force_refresh: bool = False) -> MarketRegime:
+    def get_market_regime(self, market: Literal["india", "us", "crypto"], force_refresh: bool = False) -> MarketRegime:
         """
-        Calculates and returns the current market regime for India or US.
+        Calculates and returns the current market regime for India, US, or Crypto.
         Cached for 5 minutes to avoid redundant API queries.
         """
         now = datetime.now(timezone.utc).timestamp()
@@ -76,18 +77,27 @@ class MarketRegimeDetector:
         symbol = bench_info["primary"]
         closes: list[float] = []
 
-        try:
-            import yfinance as yf
-            ticker_obj = yf.Ticker(symbol)
-            df = ticker_obj.history(period="1mo", interval="1d")
-            if df.empty and bench_info.get("alt"):
-                symbol = bench_info["alt"]
+        if market == "crypto":
+            try:
+                from src.data.fetcher_crypto import fetch_crypto_snapshot
+                snap = fetch_crypto_snapshot("BTC/USDT", limit=100)
+                if snap and snap.history:
+                    closes = [float(q.close) for q in snap.history]
+            except Exception as e:
+                logger.debug(f"[Regime] Live crypto benchmark fetch error for {symbol}: {e}")
+        else:
+            try:
+                import yfinance as yf
                 ticker_obj = yf.Ticker(symbol)
                 df = ticker_obj.history(period="1mo", interval="1d")
-            if not df.empty and "Close" in df.columns:
-                closes = [float(x) for x in df["Close"].dropna().tolist()]
-        except Exception as e:
-            logger.debug(f"[Regime] Live benchmark fetch error for {symbol}: {e}")
+                if df.empty and bench_info.get("alt"):
+                    symbol = bench_info["alt"]
+                    ticker_obj = yf.Ticker(symbol)
+                    df = ticker_obj.history(period="1mo", interval="1d")
+                if not df.empty and "Close" in df.columns:
+                    closes = [float(x) for x in df["Close"].dropna().tolist()]
+            except Exception as e:
+                logger.debug(f"[Regime] Live benchmark fetch error for {symbol}: {e}")
 
         # Fallback heuristic if live fetch failed
         if len(closes) < 20:

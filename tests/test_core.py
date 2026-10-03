@@ -130,6 +130,7 @@ def test_advisory_horizon_classification(sample_quotes):
 
 def test_paper_trading_lifecycle():
     engine = PaperTradingEngine()
+    engine.full_reset(hard_wipe=True)
     initial_cash = engine.get_account_balance("india")
     assert initial_cash > 0
 

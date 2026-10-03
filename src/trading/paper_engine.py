@@ -52,7 +52,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
-from src.data.models import Order, Position, StockSnapshot, TradeSignal
+from src.data.models import Market, Order, Position, StockSnapshot, TradeSignal
 from src.db.trading_store import (
     _conn,
     append_ledger,
@@ -104,6 +104,7 @@ class PaperTradingEngine:
             for acc_id, currency, capital in [
                 ("paper_inr", "INR", cfg.virtual_capital_inr),
                 ("paper_usd", "USD", cfg.virtual_capital_usd),
+                ("paper_crypto", "USDT", getattr(cfg, "virtual_capital_crypto", 1000.0)),
             ]:
                 conn.execute("""
                     INSERT INTO accounts (account_id, currency, cash, initial_cash, reserved_margin, updated_at)
@@ -119,7 +120,7 @@ class PaperTradingEngine:
             conn.commit()
         logger.info(
             f"[Paper Engine] Reset balances: ₹{cfg.virtual_capital_inr:,.2f} INR"
-            f" | ${cfg.virtual_capital_usd:,.2f} USD"
+            f" | ${cfg.virtual_capital_usd:,.2f} USD | ₮{getattr(cfg, 'virtual_capital_crypto', 1000.0):,.2f} USDT"
         )
 
     def full_reset(self, hard_wipe: bool = False) -> dict:
@@ -128,10 +129,11 @@ class PaperTradingEngine:
         If hard_wipe=True, deletes all rows from positions, orders, signals, ledger,
         risk_audit_log, decision_journal, trade_evaluations, and trade_playbook.
         If hard_wipe=False, archives open positions as CANCELLED.
-        Resets accounts to configured virtual capital (₹10,000 INR / $1,000 USD).
+        Resets accounts to configured virtual capital (₹10,000 INR / $1,000 USD / $1,000 USDT).
         """
         now = datetime.now(timezone.utc).isoformat()
         cfg = self.config.paper_trading
+        crypto_cap = getattr(cfg, "virtual_capital_crypto", 1000.0)
         with _conn() as conn:
             if hard_wipe:
                 for tbl in [
@@ -154,6 +156,7 @@ class PaperTradingEngine:
             for acc_id, currency, capital in [
                 ("paper_inr", "INR", cfg.virtual_capital_inr),
                 ("paper_usd", "USD", cfg.virtual_capital_usd),
+                ("paper_crypto", "USDT", crypto_cap),
             ]:
                 conn.execute("""
                     INSERT INTO accounts (account_id, currency, cash, initial_cash, reserved_margin, updated_at)
@@ -170,22 +173,27 @@ class PaperTradingEngine:
 
         logger.warning(
             f"[Paper Engine] 🔄 FULL RESET (hard_wipe={hard_wipe}): Starting fresh with "
-            f"₹{cfg.virtual_capital_inr:,.2f} INR | ${cfg.virtual_capital_usd:,.2f} USD."
+            f"₹{cfg.virtual_capital_inr:,.2f} INR | ${cfg.virtual_capital_usd:,.2f} USD | ₮{crypto_cap:,.2f} USDT."
         )
         return {
             "hard_wipe": hard_wipe,
             "positions_cancelled": cancelled,
             "new_balance_inr": cfg.virtual_capital_inr,
             "new_balance_usd": cfg.virtual_capital_usd,
+            "new_balance_crypto": crypto_cap,
         }
 
 
     # ── Account queries ────────────────────────────────────────────────────────
 
-    def _acc_id(self, market: Literal["india", "us"]) -> str:
-        return "paper_inr" if market == "india" else "paper_usd"
+    def _acc_id(self, market: Literal["india", "us", "crypto"]) -> str:
+        if market == "india":
+            return "paper_inr"
+        elif market == "crypto":
+            return "paper_crypto"
+        return "paper_usd"
 
-    def get_account_balance(self, market: Literal["india", "us"]) -> float:
+    def get_account_balance(self, market: Market) -> float:
         """Returns free cash (not including reserved margin)."""
         with _conn() as conn:
             row = conn.execute(
@@ -193,7 +201,7 @@ class PaperTradingEngine:
             ).fetchone()
             return float(row["cash"]) if row else 0.0
 
-    def get_reserved_margin(self, market: Literal["india", "us"]) -> float:
+    def get_reserved_margin(self, market: Market) -> float:
         """Returns total margin currently blocked by open positions."""
         with _conn() as conn:
             row = conn.execute(
@@ -202,7 +210,7 @@ class PaperTradingEngine:
             ).fetchone()
             return float(row["reserved_margin"]) if row else 0.0
 
-    def get_buying_power(self, market: Literal["india", "us"]) -> dict:
+    def get_buying_power(self, market: Market) -> dict:
         """
         Returns buying power breakdown:
           - cash: free liquid cash
@@ -218,7 +226,7 @@ class PaperTradingEngine:
             "leverage": leverage,
         }
 
-    def get_daily_realized_pnl(self, market: Literal["india", "us"]) -> float:
+    def get_daily_realized_pnl(self, market: Market) -> float:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         with _conn() as conn:
             row = conn.execute("""
@@ -228,7 +236,7 @@ class PaperTradingEngine:
             """, (market, cutoff)).fetchone()
             return float(row["total_pnl"]) if (row and row["total_pnl"] is not None) else 0.0
 
-    def get_daily_stats(self, market: Literal["india", "us"]) -> dict:
+    def get_daily_stats(self, market: Market) -> dict:
         """Returns today/last-24h session stats AND lifetime stats (wins, losses, realized P&L, unrealized P&L)."""
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         acc_id = self._acc_id(market)
@@ -298,7 +306,7 @@ class PaperTradingEngine:
             "lifetime_win_rate_pct": lifetime_win_rate,
         }
 
-    def get_portfolio_risk_state(self, market: Literal["india", "us"]) -> PortfolioRiskState:
+    def get_portfolio_risk_state(self, market: Market) -> PortfolioRiskState:
         """Construct live portfolio risk state snapshot for PortfolioRiskManager."""
         nav_dict = self.get_portfolio_nav(market)
         nav_val = float(nav_dict.get("nav", 1000.0))
@@ -325,7 +333,7 @@ class PaperTradingEngine:
         drawdown_pct = max(0.0, (peak_nav - nav_val) / peak_nav) if peak_nav > 0 else 0.0
         leverage = gross_exposure / nav_val if nav_val > 0 else 0.0
 
-        currency = "INR" if market == "india" else "USD"
+        currency = "INR" if market == "india" else ("USDT" if market == "crypto" else "USD")
 
         return PortfolioRiskState(
             market=market,
@@ -556,7 +564,7 @@ class PaperTradingEngine:
         exit_price_raw: float,
         margin_blocked: float,
         fees_paid_so_far: float,
-        market: Literal["india", "us"],
+        market: Market,
         strategy: str,
         reason: str,
     ) -> Optional[str]:
@@ -659,7 +667,7 @@ class PaperTradingEngine:
 
     def evaluate_open_positions(
         self,
-        market: Literal["india", "us"],
+        market: Market,
         latest_snapshots: dict[str, StockSnapshot],
     ) -> list[str]:
         """
@@ -685,7 +693,7 @@ class PaperTradingEngine:
                 )
                 sl, tgt = row["stop_loss"], row["target_price"]
                 avg_cost = float(row["avg_cost"])
-                qty = int(row["quantity"])
+                qty = float(row["quantity"])
                 is_long = str(row["direction"]).upper() in ("LONG", "BUY")
 
                 # Stage 1: Full exits on Stop Loss or Final Target
@@ -775,7 +783,7 @@ class PaperTradingEngine:
     def sell_partial(
         self,
         ticker: str,
-        market: Literal["india", "us"],
+        market: Market,
         exit_price_raw: float,
         sell_quantity: int,
     ) -> Optional[str]:
@@ -795,7 +803,7 @@ class PaperTradingEngine:
             logger.warning(f"[Paper Engine] sell_partial: no open position for {ticker}")
             return None
 
-        actual_qty = int(row["quantity"])
+        actual_qty = float(row["quantity"])
         if sell_quantity >= actual_qty:
             # Delegate to full close via _close_position_record
             return self._close_position_record(
@@ -867,7 +875,7 @@ class PaperTradingEngine:
 
     def square_off_intraday(
         self,
-        market: Literal["india", "us"],
+        market: Market,
         latest_snapshots: dict[str, StockSnapshot],
     ) -> list[str]:
         """Force-close all OPEN intraday/scalping positions at current price."""
@@ -900,7 +908,7 @@ class PaperTradingEngine:
 
     def close_all_positions(
         self,
-        market: Literal["india", "us"],
+        market: Market,
         latest_snapshots: Optional[dict[str, StockSnapshot]] = None,
     ) -> list[str]:
         """Emergency close ALL open positions for a market."""
@@ -939,7 +947,7 @@ class PaperTradingEngine:
 
     # ── Portfolio summary / NAV ────────────────────────────────────────────────
 
-    def get_portfolio_nav(self, market: Literal["india", "us"]) -> dict:
+    def get_portfolio_nav(self, market: Market) -> dict:
         """
         Returns the true portfolio equity (NAV).
 
@@ -1017,7 +1025,7 @@ class PaperTradingEngine:
             "positions": positions_data,
         }
 
-    def get_portfolio_summary(self, market: Literal["india", "us"]) -> dict:
+    def get_portfolio_summary(self, market: Market) -> dict:
         """
         Backward-compatible summary used by Telegram /status.
         Delegates to get_portfolio_nav() but adds legacy keys.
@@ -1040,7 +1048,7 @@ class PaperTradingEngine:
     # ── Ledger & Decision Journal access ───────────────────────────────────────
 
     def get_transaction_ledger(
-        self, market: Literal["india", "us"], limit: int = 50
+        self, market: Market, limit: int = 50
     ) -> list[dict]:
         """Returns the most recent ledger entries for this market's account."""
         return get_ledger(self._acc_id(market), limit=limit)

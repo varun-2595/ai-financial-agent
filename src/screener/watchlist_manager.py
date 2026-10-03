@@ -38,7 +38,7 @@ def _init_db() -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
                 ticker      TEXT NOT NULL,
-                market      TEXT NOT NULL CHECK(market IN ('india', 'us')),
+                market      TEXT NOT NULL,
                 source      TEXT NOT NULL DEFAULT 'auto',
                 strategies  TEXT NOT NULL DEFAULT '["swing"]',
                 pinned      INTEGER NOT NULL DEFAULT 0,
@@ -235,7 +235,7 @@ def get_banned_tickers() -> list[str]:
 
 
 def get_active_tickers(
-    market: Literal["india", "us"] | None = None,
+    market: Literal["india", "us", "crypto"] | None = None,
     strategy: Strategy | None = None,
 ) -> list[dict]:
     _init_db()
@@ -259,6 +259,19 @@ def get_active_tickers(
                 "strategies": strats,
                 "pinned":     bool(row["pinned"]),
             })
+
+    # Default fallback for crypto market if not yet seeded
+    if market == "crypto" and not rows:
+        from src.data.fetcher_crypto import CORE_CRYPTO_WATCHLIST
+        for coin in CORE_CRYPTO_WATCHLIST:
+            rows.append({
+                "ticker": coin,
+                "market": "crypto",
+                "source": "auto",
+                "strategies": ["scalping", "intraday", "swing"],
+                "pinned": True,
+            })
+
     return rows
 
 

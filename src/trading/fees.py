@@ -48,7 +48,7 @@ class FeeSchedule:
 
     def compute_fees(
         self,
-        market: Literal["india", "us"],
+        market: Literal["india", "us", "crypto"],
         direction: Literal["BUY", "SELL"],
         filled_price: float,
         quantity: int,
@@ -64,6 +64,10 @@ class FeeSchedule:
 
         if is_paper:
             return round(notional * self.paper_per_side_pct, 4)
+
+        if market == "crypto":
+            # Standard exchange VIP0 crypto taker fee: 0.05%
+            return round(notional * 0.0005, 4)
 
         # ── Real / Live Indian Fee Calculation ────────────────────────────
         if market == "india":

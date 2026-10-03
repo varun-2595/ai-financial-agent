@@ -63,6 +63,11 @@ class NewsItem(BaseModel):
     sentiment: Literal["positive", "neutral", "negative"] | None = None
 
 
+Market = Literal["india", "us", "crypto"]
+Currency = Literal["INR", "USD", "USDT"]
+Strategy = Literal["scalping", "intraday", "swing", "positional"]
+
+
 # ── Stock Snapshot (main data object passed to analyst) ───────────────────────
 
 class StockSnapshot(BaseModel):
@@ -72,9 +77,9 @@ class StockSnapshot(BaseModel):
     """
     ticker: str
     name: str | None = None
-    market: Literal["india", "us"]
+    market: Market
     sector: str | None = None
-    currency: Literal["INR", "USD"]
+    currency: Currency
     is_etf: bool = False                    # set explicitly by fetcher (not guessed)
 
     # Current price info
@@ -105,12 +110,9 @@ class StockSnapshot(BaseModel):
 
     def price_summary(self) -> str:
         """One-line price summary for logging / quick display."""
-        currency_sym = "₹" if self.currency == "INR" else "$"
+        currency_sym = "₹" if self.currency == "INR" else ("$" if self.currency == "USD" else "₮")
         chg = f"{self.price_change_pct_1d:+.2f}%" if self.price_change_pct_1d is not None else "N/A"
         return f"{self.ticker} @ {currency_sym}{self.current_price:,.2f} ({chg} today)"
-
-
-Strategy = Literal["scalping", "intraday", "swing", "positional"]
 
 
 # ── Trade Signal ──────────────────────────────────────────────────────────────
@@ -120,13 +122,13 @@ class TradeSignal(BaseModel):
     model_config = ConfigDict(strict=True)
 
     ticker: str
-    market: Literal["india", "us"]
+    market: Market
     strategy: Strategy
     direction: Literal["BUY", "SELL", "HOLD"]
     entry_price: float
     stop_loss: float
     target_price: float
-    quantity: int
+    quantity: float
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
     generated_at: datetime = Field(default_factory=_utcnow)
@@ -141,11 +143,11 @@ class Order(BaseModel):
 
     order_id: str
     ticker: str
-    market: Literal["india", "us"]
+    market: Market
     strategy: Strategy
     order_type: Literal["MARKET", "LIMIT", "SL", "SL-M"]
     direction: Literal["BUY", "SELL"]
-    quantity: int
+    quantity: float
     limit_price: float | None = None
     trigger_price: float | None = None
     filled_price: float | None = None
@@ -160,10 +162,10 @@ class Order(BaseModel):
 class Position(BaseModel):
     """An open position in the portfolio."""
     ticker: str
-    market: Literal["india", "us"]
+    market: Market
     strategy: Strategy
     direction: Literal["LONG", "SHORT"]
-    quantity: int
+    quantity: float
     avg_cost: float
     current_price: float | None = None
     stop_loss: float | None = None
@@ -194,7 +196,7 @@ class AdvisoryHolding(BaseModel):
     """An advisory portfolio holding (recommended, not auto-executed)."""
     ticker: str
     name: str | None = None
-    market: Literal["india", "us"]
+    market: Market
     horizon: Literal["short_term", "long_term"]
     entry_price: float
     recommended_at: datetime
@@ -242,7 +244,7 @@ class TradePlaybookEntry(BaseModel):
     """An autopsy record of a completed trade for continuous learning."""
     id: int | None = None
     ticker: str
-    market: Literal["india", "us"]
+    market: Market
     strategy: Strategy
     direction: Literal["BUY", "SELL"]
     entry_price: float

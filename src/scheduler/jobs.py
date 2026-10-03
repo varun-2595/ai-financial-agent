@@ -8,6 +8,7 @@ from typing import Literal
 
 from src.advisory.recommender import AdvisoryRecommender
 from src.advisory.sell_signal_engine import AdvisorySellEngine
+from src.data.fetcher_crypto import fetch_crypto_batch
 from src.data.fetcher_india import fetch_india_batch, fetch_india_stock
 from src.data.fetcher_us import fetch_us_batch, fetch_us_stock
 from src.notifier.formatter import (
@@ -41,8 +42,8 @@ def job_screen_universe() -> None:
     )
 
 
-def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
-    """Runs every 15 minutes during active trading hours for the respective market."""
+def job_market_intraday_scan(market: Literal["india", "us", "crypto"]) -> None:
+    """Runs every 15 minutes during active trading hours for equities, and 24/7 for crypto."""
     if market == "india" and not is_nse_open():
         return
     if market == "us" and not is_nyse_open():
@@ -53,14 +54,15 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
     sig_gen = SignalGenerator()
     tg = TelegramNotifier()
 
-    # Dynamic Opportunity Discovery: Discover breaking momentum runners & volume spikes
-    try:
-        scanner = DynamicOpportunityScanner()
-        newly_added = scanner.sync_dynamic_opportunities_to_watchlist(market=market, top_n=10)
-        if newly_added:
-            logger.info(f"[Job] Discovered {len(newly_added)} new dynamic runners for {market.upper()}: {newly_added}")
-    except Exception as scan_err:
-        logger.warning(f"[Job] Dynamic discovery encountered minor error: {scan_err}")
+    # Dynamic Opportunity Discovery: Discover breaking momentum runners & volume spikes (equities)
+    if market in ("india", "us"):
+        try:
+            scanner = DynamicOpportunityScanner()
+            newly_added = scanner.sync_dynamic_opportunities_to_watchlist(market=market, top_n=10)
+            if newly_added:
+                logger.info(f"[Job] Discovered {len(newly_added)} new dynamic runners for {market.upper()}: {newly_added}")
+        except Exception as scan_err:
+            logger.warning(f"[Job] Dynamic discovery encountered minor error: {scan_err}")
 
     # 1. Fetch current active tickers for this market (includes newly discovered dynamic runners)
     tickers_info = get_active_tickers(market=market)
@@ -68,8 +70,10 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
 
     if market == "india":
         snapshots = fetch_india_batch(tickers, delay_seconds=0.2)
-    else:
+    elif market == "us":
         snapshots = fetch_us_batch(tickers, delay_seconds=0.2)
+    else:
+        snapshots = fetch_crypto_batch(tickers)
 
     # 2. Check open positions for Stop-Loss or Target-Profit triggers
     closed_reports = engine.evaluate_open_positions(market, snapshots)
@@ -109,9 +113,15 @@ def job_market_intraday_scan(market: Literal["india", "us"]) -> None:
     # Check daily profit target lock & max daily loss guardrail
     daily_pnl = engine.get_daily_realized_pnl(market)
     cfg_paper = engine.config.paper_trading
-    target = cfg_paper.daily_profit_target_inr if market == "india" else cfg_paper.daily_profit_target_usd
-    max_loss = cfg_paper.daily_max_loss_inr if market == "india" else cfg_paper.daily_max_loss_usd
-    currency_sym = "₹" if market == "india" else "$"
+    target = (
+        cfg_paper.daily_profit_target_inr if market == "india"
+        else (cfg_paper.daily_profit_target_crypto if market == "crypto" else cfg_paper.daily_profit_target_usd)
+    )
+    max_loss = (
+        cfg_paper.daily_max_loss_inr if market == "india"
+        else (cfg_paper.daily_max_loss_crypto if market == "crypto" else cfg_paper.daily_max_loss_usd)
+    )
+    currency_sym = "₹" if market == "india" else ("₮" if market == "crypto" else "$")
 
     if daily_pnl >= target:
         logger.success(f"[Job] 🎯 {market.upper()} Daily Profit Target Reached ({currency_sym}{daily_pnl:,.2f} >= {currency_sym}{target:,.2f})! Preserving day's profit.")
@@ -180,7 +190,7 @@ def job_intraday_square_off(market: Literal["india", "us"]) -> None:
         tg.send_message(f"🔔 <b>Intraday Auto Square-Off:</b>\n{c}")
 
 
-def job_eod_report(market: Literal["india", "us"]) -> None:
+def job_eod_report(market: Literal["india", "us", "crypto"]) -> None:
     """Delivers EOD report with learning autopsies via Telegram and Gmail."""
     logger.info(f"[Job] Generating {market.upper()} EOD report & running trade learning engine...")
     engine = PaperTradingEngine()
@@ -194,7 +204,7 @@ def job_eod_report(market: Literal["india", "us"]) -> None:
     em = EmailNotifier()
 
     # Build Telegram EOD Report with Profit Goal and Mistake Lessons
-    curr_sym = "₹" if market == "india" else "$"
+    curr_sym = "₹" if market == "india" else ("₮" if market == "crypto" else "$")
     target_emoji = "🎯 Goal Achieved!" if eod_learning["target_met"] else "⏳ In Progress"
     report_text = (
         f"📊 <b>AEGIS {market.upper()} EOD REPORT & LEARNINGS</b>\n"

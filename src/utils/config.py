@@ -40,10 +40,13 @@ class PaperTradingSettings(BaseModel):
     enabled: bool = True
     virtual_capital_inr: float = 10_000.0
     virtual_capital_usd: float = 1_000.0
+    virtual_capital_crypto: float = 1_000.0
     daily_profit_target_inr: float = 1_000.0
     daily_profit_target_usd: float = 150.0
+    daily_profit_target_crypto: float = 100.0
     daily_max_loss_inr: float = 500.0
     daily_max_loss_usd: float = 50.0
+    daily_max_loss_crypto: float = 50.0
     intraday_leverage_multiplier: float = 3.0
     risk_per_trade_pct: float = 0.03
     max_position_pct: float = 0.40

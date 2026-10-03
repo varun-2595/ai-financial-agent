@@ -109,6 +109,17 @@ def build_scheduler(background: bool = True) -> BackgroundScheduler | BlockingSc
         id="monthly_advisory_run",
     )
 
+    # 5. Crypto (24/7/365) Continuous Session
+    # Intraday signal scan every 15 mins round the clock
+    sched.add_job(
+        lambda: job_market_intraday_scan("crypto"),
+        "cron",
+        hour="*",
+        minute="*/15",
+        timezone=IST,
+        id="crypto_247_intraday_scan",
+    )
+
     return sched
 
 

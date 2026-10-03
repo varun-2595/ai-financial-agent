@@ -91,7 +91,7 @@ class FastTickMonitor:
         all_reports: List[str] = []
 
         # Group open positions by market
-        markets: Dict[Literal["india", "us"], List[dict]] = {"india": [], "us": []}
+        markets: Dict[Literal["india", "us", "crypto"], List[dict]] = {"india": [], "us": [], "crypto": []}
         for pos in open_positions:
             m = str(pos.get("market", "india")).lower()
             if m in markets:
@@ -101,7 +101,7 @@ class FastTickMonitor:
             if not pos_list:
                 continue
 
-            # Respect market hours unless explicitly disabled (e.g. testing or paper sim)
+            # Respect market hours unless explicitly disabled (crypto trades 24/7)
             if self.enforce_market_hours:
                 if m_key == "india" and not is_nse_open():
                     continue
@@ -119,10 +119,11 @@ class FastTickMonitor:
                         ttl_seconds=1.5,
                     )
                     if price and price > 0:
+                        cur_code = "INR" if m_key == "india" else ("USDT" if m_key == "crypto" else "USD")
                         snapshots[ticker] = StockSnapshot(
                             ticker=ticker,
                             market=m_key,
-                            currency="INR" if m_key == "india" else "USD",
+                            currency=cur_code,  # type: ignore
                             current_price=price,
                             history=[],
                         )
@@ -144,7 +145,7 @@ class FastTickMonitor:
                     logger.success(f"[Fast Tick Monitor] ⚡ ACTION EXECUTED: {rep}")
                     try:
                         self.notifier.send_message(
-                            f"⚡ <b>Fast Tick Risk Execution</b>\n<code>{rep}</code>"
+                            f"⚡ <b>Fast Tick Risk Execution ({m_key.upper()})</b>\n<code>{rep}</code>"
                         )
                     except Exception as notify_err:
                         logger.warning(f"[Fast Tick Monitor] Telegram alert failed: {notify_err}")
@@ -152,7 +153,7 @@ class FastTickMonitor:
         return all_reports
 
     def _default_fetch_price(self, ticker: str, market: str) -> Optional[float]:
-        """Fetch current price using existing fetchers or yfinance fast ticker."""
+        """Fetch current price using existing fetchers or yfinance/binance fast ticker."""
         try:
             if market == "india":
                 from src.data.fetcher_india import normalize_india_ticker
@@ -163,6 +164,9 @@ class FastTickMonitor:
                 price = getattr(fast, "last_price", None)
                 if price:
                     return float(price)
+            elif market == "crypto":
+                from src.data.fetcher_crypto import fetch_crypto_price
+                return fetch_crypto_price(ticker)
             else:
                 from src.data.fetcher_us import fetch_us_snapshot
                 snap = fetch_us_snapshot(ticker)

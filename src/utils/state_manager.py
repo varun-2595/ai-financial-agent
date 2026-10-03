@@ -66,17 +66,23 @@ def is_trading_paused(market: str = "all") -> bool:
 
     m = market.lower()
     if m in ("all", "both"):
-        return global_paused or (get_state("pause_india", "0") == "1" and get_state("pause_us", "0") == "1")
+        return global_paused or (
+            get_state("pause_india", "0") == "1"
+            and get_state("pause_us", "0") == "1"
+            and get_state("pause_crypto", "0") == "1"
+        )
     elif m in ("india", "nse", "bse"):
         return get_state("pause_india", "0") == "1"
     elif m in ("us", "nyse", "nasdaq"):
         return get_state("pause_us", "0") == "1"
+    elif m in ("crypto", "binance", "okx"):
+        return get_state("pause_crypto", "0") == "1"
     return False
 
 
 def set_trading_paused(market: str, paused: bool) -> None:
     """
-    Set trading pause state for 'india', 'us', or 'all'.
+    Set trading pause state for 'india', 'us', 'crypto', or 'all'.
     """
     val = "1" if paused else "0"
     m = market.lower()
@@ -84,6 +90,7 @@ def set_trading_paused(market: str, paused: bool) -> None:
         set_state("pause_all", val)
         set_state("pause_india", val)
         set_state("pause_us", val)
+        set_state("pause_crypto", val)
         logger.info(f"[State] Global trading pause set to: {paused}")
     elif m in ("india", "nse", "bse"):
         set_state("pause_india", val)
@@ -95,3 +102,8 @@ def set_trading_paused(market: str, paused: bool) -> None:
         if not paused:
             set_state("pause_all", "0")
         logger.info(f"[State] US trading pause set to: {paused}")
+    elif m in ("crypto", "binance", "okx"):
+        set_state("pause_crypto", val)
+        if not paused:
+            set_state("pause_all", "0")
+        logger.info(f"[State] Crypto trading pause set to: {paused}")

@@ -19,8 +19,8 @@ class DecisionJournalEntry(BaseModel):
     """
     journal_id: str = Field(description="Unique decision ID (e.g. DEC-xxxx)")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Decision timestamp")
-    symbol: str = Field(description="Ticker symbol, e.g., RELIANCE.NS, NVDA")
-    market: Literal["india", "us"] = Field(description="Market identifier")
+    symbol: str = Field(description="Ticker symbol, e.g., RELIANCE.NS, NVDA, BTC/USDT")
+    market: Literal["india", "us", "crypto"] = Field(description="Market identifier")
     strategy: str = Field(default="multi_agent_consensus", description="Strategy identifier")
     direction: Literal["BUY", "SELL", "HOLD"] = Field(default="BUY", description="Decision direction")
     
@@ -46,8 +46,8 @@ class DecisionJournalEntry(BaseModel):
     risk_reasons: list[str] = Field(default_factory=list, description="Audit trail of risk checks")
     
     # 5. Position Sizing & Order Pricing
-    requested_quantity: int = Field(gt=0, description="Quantity proposed by AI")
-    approved_quantity: int = Field(ge=0, description="Quantity permitted by deterministic risk engine")
+    requested_quantity: float = Field(gt=0, description="Quantity proposed by AI")
+    approved_quantity: float = Field(ge=0, description="Quantity permitted by deterministic risk engine")
     entry_price: float = Field(gt=0.0, description="Proposed/executed entry price")
     stop_loss: float = Field(gt=0.0, description="Calculated stop loss price")
     target_price: float = Field(gt=0.0, description="Calculated profit target price")
