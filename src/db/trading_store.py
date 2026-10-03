@@ -270,6 +270,15 @@ def save_order(
         conn.commit()
 
 
+def get_pending_orders() -> list[dict]:
+    """Retrieve orders currently in PENDING status for reconciliation."""
+    with _conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM orders WHERE status = 'PENDING' ORDER BY created_at ASC
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_open_positions(market: Optional[str] = None, strategy: Optional[str] = None) -> list[dict]:
     query = "SELECT * FROM positions WHERE status = 'OPEN'"
     params = []

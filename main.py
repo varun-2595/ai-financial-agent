@@ -106,6 +106,11 @@ def main() -> None:
     # Start background scheduler
     scheduler = start_background_scheduler()
 
+    # Start Fast Tick Position Monitor (BeeBots 3s high-frequency SL/TP loop)
+    from src.trading.fast_tick_monitor import FastTickMonitor
+    tick_monitor = FastTickMonitor(tick_interval_seconds=3.0)
+    tick_monitor.start()
+
     # Launch interactive Telegram bot if token is configured
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if bot_token:
@@ -116,6 +121,7 @@ def main() -> None:
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down agent...")
         finally:
+            tick_monitor.stop()
             if scheduler.running:
                 scheduler.shutdown(wait=False)
             logger.info("Aegis agent shutdown cleanly.")
@@ -124,6 +130,7 @@ def main() -> None:
         try:
             signal.pause()
         except (KeyboardInterrupt, SystemExit):
+            tick_monitor.stop()
             scheduler.shutdown(wait=False)
 
 

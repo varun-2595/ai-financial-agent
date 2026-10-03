@@ -76,33 +76,28 @@ class RedTeamDebateEngine:
         if force_heuristic:
             return self._heuristic_debate(snapshot, tech, levels, memory_report)
 
-        prompt = f"""You are the Chief Risk Officer running an institutional Red-Team Pre-Trade Debate.
+        # ── BeeBots-style Constrained Action Menu (Sub-200ms M5 Inference) ──
+        prompt = f"""You are the Chief Risk Officer evaluating an institutional trade on Apple Silicon M5.
 Asset: {ticker} ({snapshot.market.upper()}) | Direction: {direction} | Strategy: {strategy}
 Market Data: {tech_summary}
 Historical Failure Memory: {memory_warning_text}
 
-Task:
-1. Bull Case: Give 2 strong arguments for this trade.
-2. Bear 'Devil's Advocate' Case: Find 2 hidden traps or structural vulnerabilities (e.g. overhead supply, RSI exhaustion, memory warning, low volume).
-3. Final Verdict: 'APPROVE', 'REDUCE', or 'REJECT'.
+Candidate Action Menu:
+[1] APPROVE: Clean setup, trend/momentum aligns, no major roadblocks.
+[2] REDUCE_50: Minor overhead resistance or pullback risk; trade at 50% size.
+[3] REJECT: Fatal structural trap, overbought exhaustion, or repeating historical failure.
 
-Respond ONLY with valid JSON in this exact structure:
-{{
-  "bull_arguments": ["point 1", "point 2"],
-  "bear_counterpoints": ["risk 1", "risk 2"],
-  "fatal_flaw_detected": false,
-  "verdict": "APPROVE",
-  "confidence_score": 0.85,
-  "verdict_reasoning": "Brief justification"
-}}
+Select the optimal action. Respond ONLY with this JSON:
+{{"choice": 1, "key_flaw": "brief reason or 'none'", "confidence": 0.85}}
 """
 
         try:
             req = ModelRequest(
-                prompt=prompt,
+                system_prompt="You are the Chief Risk Officer evaluating an institutional trade on Apple Silicon M5.",
+                user_prompt=prompt,
                 task_complexity=TaskComplexity.HIGH_VOLUME,
-                temperature=0.2,
-                max_tokens=600,
+                temperature=0.1,
+                max_tokens=100,  # Fast generation (BeeBots low-latency)
             )
             resp = self.router.route(req)
             if resp.content:
@@ -111,6 +106,39 @@ Respond ONLY with valid JSON in this exact structure:
                 match = re.search(r"\{.*\}", cleaned, re.DOTALL)
                 if match:
                     data = json.loads(match.group(0))
+
+                    # Parse either constrained choice or legacy verdict
+                    if "choice" in data:
+                        choice = int(data.get("choice", 1))
+                        flaw = str(data.get("key_flaw", "none"))
+                        conf = float(data.get("confidence", 0.80))
+
+                        if choice == 3:
+                            verdict = "REJECT"
+                            fatal = True
+                            reason = f"Red-Team Veto: {flaw}"
+                        elif choice == 2:
+                            verdict = "REDUCE"
+                            fatal = False
+                            reason = f"Reduced size approved: {flaw}"
+                        else:
+                            verdict = "APPROVE"
+                            fatal = False
+                            reason = "Red-Team approved on M5 constrained menu"
+
+                        outcome = DebateOutcome(
+                            ticker=ticker,
+                            verdict=verdict,
+                            bull_arguments=["Momentum & trend aligned with strategy"],
+                            bear_counterpoints=[flaw] if flaw.lower() != "none" else ["Standard volatility"],
+                            fatal_flaw_detected=fatal,
+                            verdict_reasoning=reason,
+                            confidence_score=conf,
+                        )
+                        logger.info(f"[Red Team Fast Menu] {ticker}: {outcome.verdict} (Choice {choice}, Conf: {outcome.confidence_score:.2f})")
+                        return outcome
+
+                    # Fallback for verbose format if returned
                     verdict_str = str(data.get("verdict", "APPROVE")).upper()
                     if verdict_str not in ("APPROVE", "REDUCE", "REJECT"):
                         verdict_str = "APPROVE"

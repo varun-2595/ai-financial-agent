@@ -475,8 +475,9 @@ class PaperTradingEngine:
             self.journal_store.record_decision(journal_rec)
             return None
 
-        # ── Build & persist order ──────────────────────────────────────────
+        # ── Two-Phase Commit: 1. Pre-Order Intent Journaling (BeeBots pattern) ─────
         order_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
+        now_dt = datetime.now(timezone.utc)
         order = Order(
             order_id=order_id,
             ticker=signal.ticker,
@@ -485,16 +486,17 @@ class PaperTradingEngine:
             order_type="MARKET",
             direction="BUY",
             quantity=signal.quantity,
+            limit_price=signal.entry_price,
             filled_price=filled_price,
-            status="FILLED",
+            status="PENDING",
             is_paper=True,
-            filled_at=datetime.now(timezone.utc),
+            created_at=now_dt,
         )
         save_order(order, fees=entry_fees, slippage_pct=self.fees.slippage_pct)
 
-        # ── Atomic DB update: cash, reserved_margin, position, ledger ─────
+        # ── Two-Phase Commit: 2. Execution & Balance Commit ────────────────
         acc_id = self._acc_id(signal.market)
-        now_str = datetime.now(timezone.utc).isoformat()
+        now_str = now_dt.isoformat()
         with _conn() as conn:
             # 1. Deduct cash & block margin
             new_cash = self._update_cash(conn, acc_id,
@@ -523,6 +525,11 @@ class PaperTradingEngine:
                           ref_order_id=order_id, ref_position_id=pos_id,
                           description=f"Entry fees {signal.ticker}")
             conn.commit()
+
+        # Mark order as FILLED in two-phase commit
+        order.status = "FILLED"
+        order.filled_at = datetime.now(timezone.utc)
+        save_order(order, fees=entry_fees, slippage_pct=self.fees.slippage_pct)
 
         # ── Record executed decision journal entry ─────────────────────────
         journal_rec.order_id = order_id
