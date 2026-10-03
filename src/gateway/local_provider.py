@@ -37,7 +37,7 @@ class LocalModelProvider(BaseModelProvider):
         model_name: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout_seconds: float = 30.0,
-        health_timeout_seconds: float = 1.0,
+        health_timeout_seconds: float = 3.5,
     ):
         cfg = get_config()
         raw_endpoint = endpoint or getattr(cfg.llm, "local_endpoint", "http://127.0.0.1:11434/v1")
