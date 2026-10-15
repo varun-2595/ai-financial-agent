@@ -27,7 +27,8 @@ class GeminiProvider(BaseModelProvider):
         api_key: Optional[str] = None,
         model_name: Optional[str] = None,
     ):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        raw_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        self.api_key = raw_key.strip("'\" \t\r\n") if raw_key else None
         cfg = get_config()
         self.model = model_name or cfg.llm.model
         self.fallback_model = cfg.llm.fallback_model
