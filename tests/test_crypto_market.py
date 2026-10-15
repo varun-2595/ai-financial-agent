@@ -145,7 +145,7 @@ def test_fast_tick_monitor_247_crypto(tmp_path):
         exits = monitor.tick_once()
         assert len(exits) == 1
         assert "ETH/USDT" in exits[0]
-        assert "STOP LOSS HIT" in exits[0]
+        assert "STOP-LOSS" in exits[0]
 
         # Open positions should now be 0
         assert engine.get_portfolio_summary("crypto")["open_positions_count"] == 0

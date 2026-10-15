@@ -15,6 +15,8 @@ from google import genai
 from google.genai import types
 
 from src.data.models import Strategy, TradePlaybookEntry
+from src.gateway.gateway import ModelRequest, TaskComplexity
+from src.gateway.router import ModelRouter
 from src.utils.config import get_config
 from src.utils.logger import logger
 
@@ -51,13 +53,134 @@ def init_playbook_table() -> None:
         conn.commit()
 
 
+def get_ticker_consecutive_losses(ticker: str, market: str) -> int:
+    """
+    Returns the count of consecutive losses for a ticker up to the most recent closed trade.
+    """
+    clean_ticker = ticker.upper().strip()
+    with _conn() as conn:
+        rows = conn.execute("""
+            SELECT realized_pnl FROM positions
+            WHERE ticker = ? AND market = ? AND status = 'CLOSED'
+            ORDER BY closed_at DESC LIMIT 10
+        """, (clean_ticker, market)).fetchall()
+        
+    consecutive = 0
+    for r in rows:
+        pnl = float(r["realized_pnl"] or 0.0)
+        if pnl < 0:
+            consecutive += 1
+        else:
+            break
+    return consecutive
+
+
+def is_ticker_quarantined(ticker: str, market: str, cooldown_hours: int = 72) -> tuple[bool, str]:
+    """
+    Determines if a ticker should be quarantined from trading due to consecutive losses
+    or severe 7-day negative expectancy.
+    Rule: 2 or more consecutive losses = 72-hour quarantine.
+          3 or more losses in 7 days with negative net PnL = 7-day quarantine.
+    """
+    clean_ticker = ticker.upper().strip()
+    now_utc = datetime.now(timezone.utc)
+    
+    with _conn() as conn:
+        # Check consecutive losses
+        recent_rows = conn.execute("""
+            SELECT realized_pnl, closed_at FROM positions
+            WHERE ticker = ? AND market = ? AND status = 'CLOSED'
+            ORDER BY closed_at DESC LIMIT 5
+        """, (clean_ticker, market)).fetchall()
+
+    if not recent_rows:
+        return False, ""
+
+    consecutive = 0
+    latest_closed_at_str = None
+    latest_loss_pnl = 0.0
+    for r in recent_rows:
+        pnl = float(r["realized_pnl"] or 0.0)
+        if pnl < 0:
+            consecutive += 1
+            if latest_closed_at_str is None:
+                latest_closed_at_str = r["closed_at"]
+                latest_loss_pnl = pnl
+        else:
+            break
+
+    if consecutive >= 2 and latest_closed_at_str:
+        try:
+            closed_dt = datetime.fromisoformat(latest_closed_at_str)
+            if closed_dt.tzinfo is None:
+                closed_dt = closed_dt.replace(tzinfo=timezone.utc)
+            elapsed_hours = (now_utc - closed_dt).total_seconds() / 3600.0
+            if elapsed_hours < cooldown_hours:
+                remaining_hrs = int(cooldown_hours - elapsed_hours)
+                return (
+                    True,
+                    f"Ticker {clean_ticker} in {cooldown_hours}h QUARANTINE after {consecutive} consecutive losses "
+                    f"(Latest loss: {latest_loss_pnl:+.2f}, {remaining_hrs}h remaining)."
+                )
+        except Exception:
+            pass
+
+    return False, ""
+
+
+def validate_signal_against_playbook(
+    ticker: str,
+    market: str,
+    strategy: str,
+    rsi: Optional[float] = None,
+    rel_volume: Optional[float] = None,
+) -> tuple[bool, str]:
+    """
+    Enforces active rules from trade_playbook against a proposed setup.
+    If the setup matches a known chronic failure mode for this ticker or strategy,
+    it rejects the trade before capital is committed.
+    """
+    clean_ticker = ticker.upper().strip()
+    with _conn() as conn:
+        rows = conn.execute("""
+            SELECT failure_category, prescriptive_lesson
+            FROM trade_playbook
+            WHERE ticker = ? AND market = ?
+            ORDER BY id DESC LIMIT 5
+        """, (clean_ticker, market)).fetchall()
+
+    if not rows:
+        return True, "No prior failure patterns."
+
+    categories = [r["failure_category"] for r in rows]
+
+    # Rule 1: Overbought reversal trap
+    if any(c in ("OVERBOUGHT_REVERSAL", "OVERBOUGHT_EXHAUSTION") for c in categories):
+        if rsi is not None and rsi > 62.0:
+            return (
+                False,
+                f"Playbook Block: Prior loss from OVERBOUGHT_REVERSAL on {clean_ticker}. Current RSI ({rsi:.1f} > 62) is overextended."
+            )
+
+    # Rule 2: Low-volume chop trap
+    if any(c in ("CHOPPY_NOISE_FLUSH", "LOW_VOLUME_CHOP", "MOMENTUM_STAGNATION") for c in categories):
+        if rel_volume is not None and rel_volume < 1.3:
+            return (
+                False,
+                f"Playbook Block: Prior loss from CHOP/STAGNATION on {clean_ticker}. Relative volume ({rel_volume:.2f}x < 1.3x) is insufficient."
+            )
+
+    return True, "Playbook rules cleared."
+
+
 class LearningEngine:
     """
     Evaluates completed trades at EOD to extract concrete rules and mistake autopsies.
     """
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, router: Optional[ModelRouter] = None):
         self.config = get_config()
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.router = router or ModelRouter()
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
         init_playbook_table()
 
@@ -76,11 +199,40 @@ class LearningEngine:
         realized_pnl = pos.get("realized_pnl", 0.0)
         pnl_pct = ((current_p - avg_cost) / avg_cost * 100) if avg_cost else 0.0
 
-        failure_cat = "FALSE_BREAKOUT"
-        root_cause = f"Position stopped out at {current_p} from entry {avg_cost}."
-        lesson = "Verify 15-minute volume surge (>1.5x) and market trend confirmation before entry."
+        # Calculate holding duration
+        holding_mins = 0.0
+        opened_at_str = pos.get("opened_at")
+        closed_at_str = pos.get("closed_at")
+        if opened_at_str and closed_at_str:
+            try:
+                op_dt = datetime.fromisoformat(opened_at_str)
+                cl_dt = datetime.fromisoformat(closed_at_str)
+                holding_mins = max(1.0, (cl_dt - op_dt).total_seconds() / 60.0)
+            except Exception:
+                pass
 
-        if self.client:
+        exit_reason = str(pos.get("exit_reason") or pos.get("reason") or "").upper()
+
+        # Dynamic quantitative failure classification
+        if "SQUARE-OFF" in exit_reason or "TIMEOUT" in exit_reason:
+            failure_cat = "MOMENTUM_STAGNATION"
+            root_cause = f"Position held {holding_mins:.0f}m without upside follow-through; closed by session square-off at {current_p}."
+            lesson = f"Avoid entering {ticker} after mid-day without >1.5x relative volume surge."
+        elif holding_mins > 0 and holding_mins < 20:
+            failure_cat = "CHOPPY_NOISE_FLUSH"
+            root_cause = f"Rapid stop-out within {holding_mins:.0f}m from entry {avg_cost} due to spread/wick volatility."
+            lesson = f"Require 15-minute candle close confirmation above resistance before buying {ticker}."
+        elif pnl_pct <= -2.0:
+            failure_cat = "STRUCTURAL_SUPPORT_BREAKDOWN"
+            root_cause = f"Sharp breakdown through invalidation level at {current_p} ({pnl_pct:+.2f}%)."
+            lesson = f"Enforce strict entry near major daily/4H support and reduce position size on high-beta setups for {ticker}."
+        else:
+            failure_cat = "PULLBACK_INVALIDATION"
+            root_cause = f"Price retreated below entry ({avg_cost} ➔ {current_p}) invalidating {direction} momentum."
+            lesson = f"Check overall market index breadth and sector strength before executing {ticker}."
+
+        # Attempt structured LLM autopsy through ModelRouter if available
+        try:
             prompt = (
                 f"You are a hedge fund risk analyst performing an objective post-mortem on a closed losing trade.\n\n"
                 f"Trade Details:\n"
@@ -89,28 +241,34 @@ class LearningEngine:
                 f"• Direction: {direction}\n"
                 f"• Entry Price: {avg_cost}\n"
                 f"• Exit Price: {current_p}\n"
+                f"• Holding Duration: {holding_mins:.0f} minutes\n"
+                f"• Exit Reason: {exit_reason or 'Stop Loss'}\n"
                 f"• Realized P&L: {realized_pnl} ({pnl_pct:+.2f}%)\n\n"
-                f"Identify why this trade failed (e.g. false breakout, overextended RSI, stop too tight, market breadth headwind) "
-                f"and provide 1 concrete rule to avoid repeating this loss.\n"
+                f"Identify why this trade failed (e.g. FALSE_BREAKOUT, OVERBOUGHT_REVERSAL, CHOPPY_NOISE_FLUSH, "
+                f"MOMENTUM_STAGNATION, MACRO_HEADWIND) and provide 1 concrete rule to avoid repeating this loss.\n"
                 f"Return JSON strictly matching this schema:\n"
                 f'{{"failure_category": "string", "root_cause": "string", "prescriptive_lesson": "string"}}'
             )
-            try:
-                resp = self.client.models.generate_content(
-                    model=self.config.llm.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.2,
-                        response_mime_type="application/json",
-                    ),
-                )
-                if resp.text:
-                    parsed = json.loads(resp.text)
+            req = ModelRequest(
+                system_prompt="You are an institutional trading risk analyst.",
+                user_prompt=prompt,
+                task_complexity=TaskComplexity.COMPLEX,
+                temperature=0.2,
+                timeout_seconds=25.0,
+            )
+            resp = self.router.route(req)
+            if resp.success and resp.content:
+                import re
+                cleaned = re.sub(r"```json\s*", "", resp.content)
+                cleaned = re.sub(r"```\s*", "", cleaned).strip()
+                match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+                if match:
+                    parsed = json.loads(match.group(0))
                     failure_cat = parsed.get("failure_category", failure_cat)
                     root_cause = parsed.get("root_cause", root_cause)
                     lesson = parsed.get("prescriptive_lesson", lesson)
-            except Exception as exc:
-                logger.warning(f"[Learning Engine] Gemini autopsy failed ({exc}); using rule-based lesson.")
+        except Exception as exc:
+            logger.debug(f"[Learning Engine] Router autopsy exception ({exc}); using dynamic rule-based lesson.")
 
         now_iso = datetime.now(timezone.utc).isoformat()
         with _conn() as conn:

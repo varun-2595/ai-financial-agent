@@ -345,10 +345,11 @@ class PostTradeEvaluator:
                 )
 
         # Stop loss check
+        curr_sym = "₹" if entry.market == "india" else ("₮" if entry.market == "crypto" else "$")
         if "STOP" in reason_str or (entry.direction == "BUY" and exit_price <= stop_loss):
             return (
                 "STOP_LOSS_HIT",
-                f"Stop loss triggered at ₹/{exit_price:.2f} (boundary ₹/{stop_loss:.2f}). Risk strictly cut."
+                f"Stop loss triggered at {curr_sym}{exit_price:.2f} (boundary {curr_sym}{stop_loss:.2f}). Risk strictly cut."
             )
 
         # Long duration sideways timeout

@@ -144,9 +144,7 @@ class FastTickMonitor:
                     all_reports.append(rep)
                     logger.success(f"[Fast Tick Monitor] ⚡ ACTION EXECUTED: {rep}")
                     try:
-                        self.notifier.send_message(
-                            f"⚡ <b>Fast Tick Risk Execution ({m_key.upper()})</b>\n<code>{rep}</code>"
-                        )
+                        self.notifier.send_message(rep)
                     except Exception as notify_err:
                         logger.warning(f"[Fast Tick Monitor] Telegram alert failed: {notify_err}")
 

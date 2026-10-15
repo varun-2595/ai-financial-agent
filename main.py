@@ -95,11 +95,37 @@ def main() -> None:
         return
 
 
+    # Check LLM Gateway status on startup
+    from src.gateway.gemini_provider import GeminiProvider
+    from src.gateway.local_provider import LocalModelProvider
+    gemini_prov = GeminiProvider()
+    local_prov = LocalModelProvider()
+
+    local_ok = local_prov.is_available()
+    gemini_ok, gemini_status = gemini_prov.validate_connection()
+
+    if not local_ok and not gemini_ok:
+        llm_status_msg = (
+            "⚠️ <b>WARNING: AI Reasoning Providers Offline!</b>\n"
+            "• Local Ollama: 🔴 OFFLINE\n"
+            f"• Cloud Gemini: 🔴 ERROR ({gemini_status})\n"
+            "<i>Trading intelligence is degraded. Update GEMINI_API_KEY in .env to restore full AI analysis.</i>"
+        )
+        logger.error(f"[Main Startup] AI Providers Offline: {gemini_status}")
+    else:
+        active_llms = []
+        if local_ok:
+            active_llms.append("M5 Local Node (Ollama)")
+        if gemini_ok:
+            active_llms.append("Google Gemini Cloud")
+        llm_status_msg = f"🧠 AI Reasoning Active: <b>{', '.join(active_llms)}</b>"
+
     # Notify Telegram on startup
     tg = TelegramNotifier()
     tg.send_message(
         "🤖 <b>Aegis AI Financial Agent Started</b>\n"
-        "Dual-market monitoring active (NSE + NYSE).\n"
+        "Tri-Market 24/7 Monitoring (NSE + NYSE + Crypto).\n"
+        f"{llm_status_msg}\n"
         "Interactive commands enabled: send <code>/help</code> for options."
     )
 

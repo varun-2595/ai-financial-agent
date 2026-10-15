@@ -661,13 +661,67 @@ class PaperTradingEngine:
         except Exception as e:
             logger.error(f"[Paper Engine] Failed to record post-trade evaluation for pos_id={pos_id}: {e}")
 
+        # Determine R-multiple, duration, and telemetry
+        r_mult_str = "N/A"
+        holding_str = "N/A"
+        consecutive_losses = 0
+        try:
+            with _conn() as conn:
+                pos_row = conn.execute("SELECT opened_at, stop_loss FROM positions WHERE id = ?", (pos_id,)).fetchone()
+                if pos_row:
+                    sl_val = pos_row["stop_loss"]
+                    if sl_val and float(sl_val) > 0 and float(avg_cost) != float(sl_val):
+                        r_unit = abs(float(avg_cost) - float(sl_val))
+                        r_mult = (exit_price - avg_cost) / r_unit
+                        r_mult_str = f"{r_mult:+.1f}R"
+                    op_str = pos_row["opened_at"]
+                    if op_str:
+                        op_dt = datetime.fromisoformat(op_str)
+                        if op_dt.tzinfo is None:
+                            op_dt = op_dt.replace(tzinfo=timezone.utc)
+                        hold_mins = max(1.0, (datetime.now(timezone.utc) - op_dt).total_seconds() / 60.0)
+                        holding_str = f"{int(hold_mins)}m" if hold_mins < 60 else f"{int(hold_mins//60)}h {int(hold_mins%60)}m"
+            from src.analyst.learning_engine import get_ticker_consecutive_losses
+            consecutive_losses = get_ticker_consecutive_losses(ticker, market)
+        except Exception:
+            pass
+
+        curr_sym = "₹" if market == "india" else ("₮" if market == "crypto" else "$")
+        is_win = net_pnl > 0
         pnl_sign = "+" if net_pnl >= 0 else ""
+
+        # Rich Diagnostic Card
+        if is_win:
+            header = f"🎯 <b>PROFIT TARGET HIT: {ticker} ({market.upper()})</b>"
+            diag = "Target objective reached. Profit captured with risk discipline."
+            action_diag = "Capital returned to cash reserve for subsequent setups."
+        elif "STOP LOSS" in reason:
+            header = f"🛑 <b>STOP-LOSS EXECUTED: {ticker} ({market.upper()})</b>"
+            diag = f"Price breached structural invalidation floor. Risk contained to protect balance."
+            if consecutive_losses >= 2:
+                action_diag = f"⚠️ {ticker} entered 72h QUARANTINE ({consecutive_losses} consecutive losses). Trading halted on ticker."
+            else:
+                action_diag = f"Logged autopsy to Trade Playbook ({ticker} loss count: {consecutive_losses})."
+        elif "SQUARE-OFF" in reason:
+            header = f"🔔 <b>SESSION SQUARE-OFF: {ticker} ({market.upper()})</b>"
+            diag = f"Intraday position auto-liquidated before market close to avoid overnight risk."
+            action_diag = "Position cleared. Trade performance archived to journal."
+        else:
+            header = f"⚙️ <b>TRADE CLOSED: {ticker} ({market.upper()})</b>"
+            diag = reason
+            action_diag = "Updated ledger balances."
+
         report = (
-            f"[EXIT] {qty}×{ticker} @ {exit_price:.4f} | "
-            f"Gross: {pnl_sign}{gross_pnl:.2f} | Fees: -{exit_fees:.4f} | "
-            f"Net: {pnl_sign}{net_pnl:.2f} ({pnl_pct:+.2f}%) | {reason}"
+            f"{header}\n"
+            f"──────────────────────────────\n"
+            f"• <b>Net P&L:</b> <b>{pnl_sign}{curr_sym}{net_pnl:,.2f} ({pnl_pct:+.2f}%)</b> | R-Multiple: <b>{r_mult_str}</b>\n"
+            f"• <b>Execution:</b> Entry {curr_sym}{avg_cost:,.2f} ➔ Exit {curr_sym}{exit_price:,.2f} (Held {holding_str})\n"
+            f"• <b>Size:</b> {qty} shares/units | Fees Paid: {curr_sym}{exit_fees:,.2f}\n"
+            f"• <b>Diagnostics:</b> {diag}\n"
+            f"• <b>Action:</b> {action_diag}\n"
+            f"──────────────────────────────"
         )
-        logger.info(f"[Paper Engine] {report}")
+        logger.info(f"[Paper Engine] [EXIT] {qty}×{ticker} Net: {pnl_sign}{net_pnl:.2f} ({pnl_pct:+.2f}%) | {reason}")
         return report
 
     # ── Public exit methods ────────────────────────────────────────────────────
@@ -735,45 +789,51 @@ class PaperTradingEngine:
                         ))
                         continue
 
-                # Stage 2: Multi-stage check for +1.5R partial profit take & Breakeven SL
-                if sl and qty > 1:
+                # Stage 2: Multi-stage check for +1.2R partial profit take & Breakeven SL
+                if sl and float(sl) > 0:
                     r_distance = abs(avg_cost - float(sl))
-                    if is_long:
-                        partial_trigger = avg_cost + (1.5 * r_distance)
-                        # Trigger partial profit if price >= +1.5R and SL is still below entry
-                        if curr_p >= partial_trigger and float(sl) < avg_cost:
-                            sell_qty = max(1, int(qty // 2))
-                            logger.success(
-                                f"[Paper Engine] 🎯 Multi-Stage: {ticker} reached +1.5R (+{((curr_p - avg_cost)/avg_cost)*100:.2f}%). "
-                                f"Booking 50% profit ({sell_qty} shs) and moving SL to BREAKEVEN ({avg_cost:.2f})."
-                            )
-                            # Update stop loss to breakeven
-                            conn.execute(
-                                "UPDATE positions SET stop_loss = ? WHERE id = ?",
-                                (avg_cost, row["id"])
-                            )
-                            conn.commit()
-                            partial_rep = self.sell_partial(ticker, market, curr_p, sell_qty)
-                            if partial_rep:
-                                closed_reports.append(partial_rep)
-                            continue
-                    else:
-                        partial_trigger = avg_cost - (1.5 * r_distance)
-                        if curr_p <= partial_trigger and float(sl) > avg_cost:
-                            sell_qty = max(1, int(qty // 2))
-                            logger.success(
-                                f"[Paper Engine] 🎯 Multi-Stage SHORT: {ticker} reached +1.5R. "
-                                f"Booking 50% profit and moving SL to BREAKEVEN ({avg_cost:.2f})."
-                            )
-                            conn.execute(
-                                "UPDATE positions SET stop_loss = ? WHERE id = ?",
-                                (avg_cost, row["id"])
-                            )
-                            conn.commit()
-                            partial_rep = self.sell_partial(ticker, market, curr_p, sell_qty)
-                            if partial_rep:
-                                closed_reports.append(partial_rep)
-                            continue
+                    if r_distance > 0:
+                        if is_long:
+                            partial_trigger = avg_cost + (1.2 * r_distance)
+                            # Trigger if price >= +1.2R and SL is still below entry
+                            if curr_p >= partial_trigger and float(sl) < avg_cost:
+                                logger.success(
+                                    f"[Paper Engine] 🎯 Multi-Stage: {ticker} reached +1.2R (+{((curr_p - avg_cost)/avg_cost)*100:.2f}%). "
+                                    f"Moving SL to BREAKEVEN ({avg_cost:.2f})."
+                                )
+                                # Update stop loss to breakeven for all positions
+                                conn.execute(
+                                    "UPDATE positions SET stop_loss = ? WHERE id = ?",
+                                    (avg_cost, row["id"])
+                                )
+                                conn.commit()
+                                # If position has multiple shares or fractional crypto, book 50% profit
+                                can_partial = (qty >= 2) or (market == "crypto" and qty > 0.01)
+                                if can_partial:
+                                    sell_qty = round(qty / 2, 4) if market == "crypto" else int(qty // 2)
+                                    partial_rep = self.sell_partial(ticker, market, curr_p, sell_qty)
+                                    if partial_rep:
+                                        closed_reports.append(partial_rep)
+                                continue
+                        else:
+                            partial_trigger = avg_cost - (1.2 * r_distance)
+                            if curr_p <= partial_trigger and float(sl) > avg_cost:
+                                logger.success(
+                                    f"[Paper Engine] 🎯 Multi-Stage SHORT: {ticker} reached +1.2R. "
+                                    f"Moving SL to BREAKEVEN ({avg_cost:.2f})."
+                                )
+                                conn.execute(
+                                    "UPDATE positions SET stop_loss = ? WHERE id = ?",
+                                    (avg_cost, row["id"])
+                                )
+                                conn.commit()
+                                can_partial = (qty >= 2) or (market == "crypto" and qty > 0.01)
+                                if can_partial:
+                                    sell_qty = round(qty / 2, 4) if market == "crypto" else int(qty // 2)
+                                    partial_rep = self.sell_partial(ticker, market, curr_p, sell_qty)
+                                    if partial_rep:
+                                        closed_reports.append(partial_rep)
+                                continue
             conn.commit()
 
         for pos_id, ticker, qty, avg_cost, curr_p, margin_blocked, fees_paid, reason, strategy in positions_to_close:
@@ -870,13 +930,17 @@ class PaperTradingEngine:
                           description=f"Partial PnL {ticker} {pnl_pct:+.2f}%")
             conn.commit()
 
+        curr_sym = "₹" if market == "india" else ("₮" if market == "crypto" else "$")
         report = (
-            f"[PARTIAL EXIT] {sell_quantity}/{actual_qty}×{ticker} @ {exit_price:.4f} | "
-            f"Gross: {pnl_sign}{gross_pnl:.2f} | Fees: -{exit_fees:.4f} | "
-            f"Net: {pnl_sign}{net_pnl:.2f} ({pnl_pct:+.2f}%) | "
-            f"Remaining: {new_qty} shares"
+            f"🎯 <b>PARTIAL PROFIT BOOKED: {ticker} ({market.upper()})</b>\n"
+            f"──────────────────────────────\n"
+            f"• <b>Net P&L Captured:</b> <b>{pnl_sign}{curr_sym}{net_pnl:,.2f} ({pnl_pct:+.2f}%)</b>\n"
+            f"• <b>Execution:</b> Closed {sell_quantity}/{actual_qty} shares @ {curr_sym}{exit_price:,.2f}\n"
+            f"• <b>Remaining:</b> {new_qty} shares (Stop Loss locked at BREAKEVEN {curr_sym}{float(row['avg_cost']):,.2f})\n"
+            f"• <b>Diagnostics:</b> +1.2R milestone secured. Downside risk completely eliminated.\n"
+            f"──────────────────────────────"
         )
-        logger.info(f"[Paper Engine] {report}")
+        logger.info(f"[Paper Engine] [PARTIAL EXIT] {sell_quantity}/{actual_qty}×{ticker} Net: {pnl_sign}{net_pnl:.2f} ({pnl_pct:+.2f}%)")
         return report
 
 

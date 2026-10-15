@@ -27,7 +27,7 @@ class GeminiProvider(BaseModelProvider):
         api_key: Optional[str] = None,
         model_name: Optional[str] = None,
     ):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         cfg = get_config()
         self.model = model_name or cfg.llm.model
         self.fallback_model = cfg.llm.fallback_model
@@ -38,8 +38,28 @@ class GeminiProvider(BaseModelProvider):
         return "gemini"
 
     def is_available(self) -> bool:
-        """Gemini is available if a valid API key is present."""
+        """Gemini is available if an API key is present."""
         return bool(self.api_key and self.client is not None)
+
+    def validate_connection(self) -> tuple[bool, str]:
+        """
+        Performs a lightweight 1-token health check probe to verify API key validity.
+        """
+        if not self.api_key:
+            return False, "GEMINI_API_KEY environment variable is not configured."
+        try:
+            client = genai.Client(api_key=self.api_key)
+            resp = client.models.generate_content(
+                model=self.model,
+                contents="ping",
+                config=types.GenerateContentConfig(max_output_tokens=2),
+            )
+            return True, "Gemini API connection healthy."
+        except Exception as e:
+            err_str = str(e)
+            if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
+                return False, "API_KEY_INVALID: Configured Gemini API key is rejected by Google API."
+            return False, f"Gemini probe error: {err_str}"
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         """

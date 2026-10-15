@@ -49,17 +49,26 @@ class SignalGenerator:
         Synthesizes technical conditions, historical memory, Red-Team debate,
         stress testing, and LLM analysis to produce high-conviction TradeSignal.
         """
-        # Prevent duplicate entries if a position in this ticker is already open or closed recently at a loss
+        # Prevent duplicate entries or trading quarantined tickers
         if not skip_db_check:
             try:
                 from datetime import datetime, timezone, timedelta
                 from src.db.trading_store import _conn, get_open_positions
+                from src.analyst.learning_engine import is_ticker_quarantined
+                
+                # Check active positions
                 open_pos = get_open_positions(market=snapshot.market)
                 if any(p["ticker"] == snapshot.ticker for p in open_pos):
                     logger.debug(f"[Signal] Position already active for {snapshot.ticker}; skipping duplicate.")
                     return None
 
-                # 4-hour cooldown after a stopped-out / losing trade to prevent churn
+                # Enforce Ticker Quarantine (72h cooldown on consecutive losses)
+                is_quarantined, q_reason = is_ticker_quarantined(snapshot.ticker, snapshot.market)
+                if is_quarantined:
+                    logger.warning(f"[Signal] 🚫 Trade BLOCKED by Quarantine: {q_reason}")
+                    return None
+
+                # 4-hour cooldown after any single stopped-out / losing trade to prevent churn
                 cutoff_loss = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
                 with _conn() as conn:
                     last_closed = conn.execute("""
@@ -106,6 +115,24 @@ class SignalGenerator:
         tech = compute_technical_indicators(snapshot.history)
         levels = compute_support_resistance(snapshot.history)
 
+        # Enforce Closed-Loop Playbook Rules against technical indicators
+        try:
+            from src.analyst.learning_engine import validate_signal_against_playbook
+            rel_vol = getattr(tech, "volume_ratio_20", 1.0) if tech else 1.0
+            rsi_val = getattr(tech, "rsi_14", None) if tech else None
+            pb_ok, pb_reason = validate_signal_against_playbook(
+                ticker=snapshot.ticker,
+                market=snapshot.market,
+                strategy=strategy,
+                rsi=rsi_val,
+                rel_volume=rel_vol,
+            )
+            if not pb_ok:
+                logger.warning(f"[Signal] 🚫 Trade REJECTED by Playbook Enforcement: {pb_reason}")
+                return None
+        except Exception as pb_err:
+            logger.debug(f"[Signal] Playbook check skipped ({pb_err})")
+
         # 4. Analyst evaluation
         analysis = self.analyst.analyze_stock(snapshot)
 
@@ -132,26 +159,26 @@ class SignalGenerator:
             )
             return None
 
-        # Calculate entry, SL, and target based on strategy & technical levels
+        # Calculate entry, SL, and target with realistic positive expectancy
         if strategy == "scalping":
             entry = current_p
-            # Volatility-aware scalp: 1.5% or 1.2*ATR stop loss, 2.5% or 2.2*ATR profit target
-            sl_dist = max(current_p * 0.015, atr * 1.2)
-            tgt_dist = max(current_p * 0.025, atr * 2.2)
+            # Sized for rapid execution: stop loss 0.8%-1.5% (1.0*ATR), Target +1.6R (1.3%-2.4%)
+            sl_dist = max(current_p * 0.008, min(current_p * 0.015, atr * 1.0))
+            tgt_dist = round(sl_dist * 1.6, 4)
             stop_loss = round(current_p - sl_dist, 2)
             target = round(current_p + tgt_dist, 2)
         elif strategy == "intraday":
             entry = current_p
-            # Intraday momentum breakout
-            sl_dist = max(current_p * 0.020, atr * 1.5)
-            tgt_dist = max(current_p * 0.038, atr * 2.8)
+            # Realistic intraday momentum: stop loss 1.2%-2.0% (1.2*ATR), Target +1.8R (2.1%-3.6%)
+            sl_dist = max(current_p * 0.012, min(current_p * 0.020, atr * 1.2))
+            tgt_dist = round(sl_dist * 1.8, 4)
             stop_loss = round(levels.support_1 if (levels.support_1 < current_p and (current_p - levels.support_1) <= sl_dist * 1.2) else (current_p - sl_dist), 2)
             target = round(levels.resistance_1 if (levels.resistance_1 > current_p and (levels.resistance_1 - current_p) >= tgt_dist * 0.8) else (current_p + tgt_dist), 2)
         elif strategy == "swing":
             entry = current_p
             # Swing setup: support/ATR based
-            sl_dist = max(current_p * 0.035, atr * 2.0)
-            tgt_dist = max(current_p * 0.075, atr * 4.0)
+            sl_dist = max(current_p * 0.030, atr * 1.8)
+            tgt_dist = sl_dist * 2.2
             stop_loss = round(min(levels.support_1, current_p - sl_dist) if levels.support_1 < current_p else (current_p - sl_dist), 2)
             target = round(levels.resistance_2 if levels.resistance_2 > current_p else (current_p + tgt_dist), 2)
         else: # positional
